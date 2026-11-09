@@ -14,13 +14,16 @@ function Run { & $Zig @args; if ($LASTEXITCODE) { throw "zig failed: $args" } }
 
 Run @cc -shared -o build\dinput8.dll src\w3crashfix.c src\dinput8.def -luser32 -lkernel32
 Run @cc -shared -DW3_ASI -o build\W3CrashFix.asi src\w3crashfix.c src\w3crashfix_asi.def -luser32 -lkernel32
+# installer embeds both files above (see src\installer.rc), so it is built after them
+Run @cc -s -municode '-Wl,--subsystem,windows' -o build\W3CrashFix-Installer.exe src\installer.c src\installer.rc -luser32 -lkernel32 -lshell32 -lole32 -ladvapi32 -lgdi32 -lversion
 Run @cc -o build\test_stub.exe src\test_stub.c
 & .\build\test_stub.exe; if ($LASTEXITCODE) { throw 'unit test failed' }
-'Built build\dinput8.dll and build\W3CrashFix.asi'
+'Built build\dinput8.dll, build\W3CrashFix.asi and build\W3CrashFix-Installer.exe'
 
 if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value
-    Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
+    try { if (Test-Path dist) { Remove-Item dist -Recurse -Force -ErrorAction Stop } }
+    catch { throw "Can't clear dist\ - is a zip open in 7-Zip or Explorer? ($($_.Exception.Message))" }
     $docs = 'README.md', 'LICENSE'
     foreach ($kind in 'standalone', 'asi') {
         $stage = "dist\stage-$kind"
@@ -32,10 +35,16 @@ if ($Package) {
         Compress-Archive -Path "$stage\*" -DestinationPath "dist\W3CrashFix-$ver-$kind.zip"
         Remove-Item $stage -Recurse -Force
     }
+    # installer: zipped (Nexus Mods only accepts archives) with the docs
+    $stage = 'dist\stage-installer'
+    New-Item -ItemType Directory -Force $stage | Out-Null
+    Copy-Item build\W3CrashFix-Installer.exe, README.md, LICENSE $stage
+    Compress-Archive -Path "$stage\*" -DestinationPath "dist\W3CrashFix-$ver-installer.zip"
+    Remove-Item $stage -Recurse -Force
     # source archive (what GitHub would also generate from a tag)
     $src = "dist\stage-src\W3CrashFix-$ver"
     New-Item -ItemType Directory -Force $src | Out-Null
-    Copy-Item src, build.ps1, Install-W3CrashFix.ps1, README.md, LICENSE, .gitignore $src -Recurse
+    Copy-Item src, .github, build.ps1, Install-W3CrashFix.ps1, README.md, LICENSE, .gitignore $src -Recurse
     Compress-Archive -Path $src -DestinationPath "dist\W3CrashFix-$ver-source.zip"
     Remove-Item dist\stage-src -Recurse -Force
     Get-ChildItem dist | Select-Object Name, Length

@@ -24,6 +24,18 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 ## Installation
 
+### Easiest: the installer
+
+1. Download `W3CrashFix-<version>-installer.zip`, extract it, and run `W3CrashFix-Installer.exe`.
+2. The installer looks for the game in Steam, GOG and Epic. If it doesn't find it, click **Browse** and select the game folder.
+3. Choose a version (explained below) and click **Install**. You can use **Uninstall** later to remove it.
+
+The installer checks your game version. It won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that an ASI loader is installed. If none is found, it links you to [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest). That loader is a separate project and is not included.
+
+Windows may show a SmartScreen warning ("Windows protected your PC") because the installer is not code-signed. Click **More info**, then **Run anyway**. You can also install by hand as described below; it's just one file.
+
+### Manual installation
+
 Choose **one** of the two versions.
 
 ### A. Standalone (`dinput8.dll`)
@@ -58,7 +70,7 @@ Every 30 seconds the mod adds a status line to the log, including live descripto
 
 ### Uninstall
 
-Delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`.
+Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`.
 
 ## Technical details
 
@@ -100,6 +112,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 - `src\idstub.h`: the fix-2 guard code generator.
 - `src\test_stub.c`: unit tests for the guard code.
 - `src\test_harness.c`: loads the DLL outside the game and exercises the D3D12 hooks.
+- `src\installer.c`, `src\installer.rc`, `src\installer.manifest`: the installer. Both mod files are embedded in it.
 
 ## FAQ
 
@@ -108,6 +121,12 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 **Can this get me banned?** The Witcher 3: Wild Hunt Remastered is single-player and has no anti-cheat. The mod uses the same loading method as many popular Witcher 3 mods.
 
 **Will CD Projekt RED fix this?** Hopefully. Once the game is updated with a fix, this mod disables itself automatically.
+
+## Support
+
+W3CrashFix is free. If it saved your playthrough and you'd like to say thanks, you can buy me a coffee on Ko-fi:
+
+[![Support on Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/havoc104/tip)
 
 ## License and credits
 
@@ -118,3 +137,4 @@ MIT. See [LICENSE](LICENSE).
 - Nexus Mods: [104Havoc](https://www.nexusmods.com/profile/104Havoc)
 - GitHub: [Havoc104](https://github.com/Havoc104)
 - Reddit: [u/Havoc_-_](https://www.reddit.com/user/Havoc_-_)
+- Ko-fi: [havoc104](https://ko-fi.com/havoc104/tip)
