@@ -1,0 +1,13 @@
+build/
+dist/
+tools/
+logs/
+*.log
+*.csv
+# personal test/diagnostic scripts
+Watch-Witcher3.ps1
+Measure-Frametimes.ps1
+Set-Fixes.ps1
+Disable-GraphicsMods.ps1
+Restore-GraphicsMods.ps1
+src/analyze_frametimes.py
