@@ -1,4 +1,4 @@
-# Installs / removes W3CrashFix in The Witcher 3's DX12 bin folder. Pick one form:
+# Installs / removes W3CrashFix in the DX12 bin folder of The Witcher 3: Wild Hunt Remastered. Pick one form:
 #   .\Install-W3CrashFix.ps1              -> dinput8.dll   (standalone, no other mods needed)
 #   .\Install-W3CrashFix.ps1 -Asi         -> W3CrashFix.asi (needs an ASI loader, e.g. Ultimate ASI Loader)
 #   .\Install-W3CrashFix.ps1 -Uninstall   -> removes whichever of ours is installed
@@ -11,7 +11,7 @@ $bin = Join-Path $GamePath 'bin\x64_dx12'
 if (-not (Test-Path (Join-Path $bin 'witcher3.exe'))) { throw "witcher3.exe not found in $bin - pass -GamePath <game folder>." }
 $dll = Join-Path $bin 'dinput8.dll'
 $asiFile = Join-Path $bin 'W3CrashFix.asi'
-if (Get-Process witcher3 -ErrorAction SilentlyContinue) { throw 'Close The Witcher 3 first.' }
+if (Get-Process witcher3 -ErrorAction SilentlyContinue) { throw 'Close The Witcher 3: Wild Hunt Remastered first.' }
 
 # ours = W3CrashFix, or its pre-release name W3HeapProbe
 function Test-Ours($path) { (Test-Path $path) -and (Select-String -Path $path -Pattern 'W3CrashFix|W3HeapProbe' -Quiet) }

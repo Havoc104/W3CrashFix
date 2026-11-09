@@ -1,6 +1,6 @@
 # W3CrashFix
 
-Fixes the frequent crashes of **The Witcher 3: Wild Hunt** (next-gen / "remastered" update, **DX12**) on PC.
+Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**) on PC.
 
 It patches two bugs in the game's code, in memory only, while the game runs. No game files are changed.
 
@@ -15,7 +15,7 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 ## Requirements
 
-- The Witcher 3 **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`). It was tested on the Steam version. GOG and Epic should work if their executable is identical.
+- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`). It was tested on the Steam version. GOG and Epic should work if their executable is identical.
 
 **Version numbers** have the form `<mod version>-<game version>`. For example, `1.0.0-5.0.16` is mod version 1.0.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
@@ -105,7 +105,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 **Does it improve performance?** No. It only stops the crashes. In a frame-time comparison with and without the fix, the difference was within noise.
 
-**Can this get me banned?** The Witcher 3 is single-player and has no anti-cheat. The mod uses the same loading method as many popular Witcher 3 mods.
+**Can this get me banned?** The Witcher 3: Wild Hunt Remastered is single-player and has no anti-cheat. The mod uses the same loading method as many popular Witcher 3 mods.
 
 **Will CD Projekt RED fix this?** Hopefully. Once the game is updated with a fix, this mod disables itself automatically.
 
