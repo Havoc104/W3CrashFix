@@ -26,7 +26,7 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 ### Easiest: the installer
 
-1. Download `W3CrashFix-<version>-installer.zip`, extract it, and run `W3CrashFix-Installer.exe`.
+1. Download `W3CrashFix-<version>-Installer.exe` from the [latest release](https://github.com/Havoc104/W3CrashFix/releases/latest) and run it. On Nexus Mods, the installer comes as a zip; extract it first.
 2. The installer looks for the game in Steam, GOG and Epic. If it doesn't find it, click **Browse** and select the game folder.
 3. Choose a version (explained below) and click **Install**. You can use **Uninstall** later to remove it.
 

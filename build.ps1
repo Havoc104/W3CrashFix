@@ -35,7 +35,8 @@ if ($Package) {
         Compress-Archive -Path "$stage\*" -DestinationPath "dist\W3CrashFix-$ver-$kind.zip"
         Remove-Item $stage -Recurse -Force
     }
-    # installer: zipped (Nexus Mods only accepts archives) with the docs
+    # installer: plain .exe (GitHub release), plus a zip with the docs (Nexus Mods only accepts archives)
+    Copy-Item build\W3CrashFix-Installer.exe "dist\W3CrashFix-$ver-Installer.exe"
     $stage = 'dist\stage-installer'
     New-Item -ItemType Directory -Force $stage | Out-Null
     Copy-Item build\W3CrashFix-Installer.exe, README.md, LICENSE $stage
