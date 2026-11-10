@@ -6,7 +6,7 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 | | Bug | Symptom |
 |---|---|---|
-| **Fix 1** | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after 20 minutes to a few hours. Access violation at `witcher3.exe+0x280ad3d`. |
+| **Fix 1** | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
 | **Fix 2** | After fast travel, a game system can look up objects with stale or invalid handle IDs. The lookup only rejects ID `-1`, so it reads far outside its table. | Crash shortly after fast travel. Access violation at `witcher3.exe+0x1eecf31` or `+0x1eece9d`. |
 
 **Results on the author's PC (RTX 5090, path tracing, DLSS RR + frame generation):**
