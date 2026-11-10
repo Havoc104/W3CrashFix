@@ -4,6 +4,8 @@ Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**)
 
 It patches two bugs in the game's code, in memory only, while the game runs. No game files are changed.
 
+**Steam version only for now.** The fix has only been confirmed on the Steam version of the game. On the Epic version it currently turns itself off and does nothing (reported by a user). The GOG version is untested.
+
 | | Bug | Symptom |
 |---|---|---|
 | **Fix 1** | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
@@ -15,12 +17,12 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 ## Requirements
 
-- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`). It was tested on the Steam version. GOG and Epic should work if their executable is identical.
+- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. The GOG version is untested. If you play on Epic or GOG, posting your `W3CrashFix.log` in an issue helps to add support.
 
 **Version numbers** have the form `<mod version>-<game version>`. For example, `1.0.0-5.0.16` is mod version 1.0.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
-**Safe after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If the game gets updated and the code changes, each fix turns itself off and logs that. It never patches code it doesn't recognise.
+**Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), each fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
 
 ## Installation
 
