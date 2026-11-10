@@ -14,12 +14,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "Onno Struijk (Havoc) and Claude"
+      VALUE "CompanyName", "Onno Struijk (Havoc104) and Claude"
       VALUE "FileDescription", "W3CrashFix installer for The Witcher 3: Wild Hunt Remastered"
       VALUE "FileVersion", "1.0.0-5.0.16"
       VALUE "ProductName", "W3CrashFix"
       VALUE "ProductVersion", "1.0.0-5.0.16"
-      VALUE "LegalCopyright", "Copyright (c) 2026 Onno Struijk (Havoc) and Claude. MIT License."
+      VALUE "LegalCopyright", "Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License."
       VALUE "OriginalFilename", "W3CrashFix-Installer.exe"
     END
   END

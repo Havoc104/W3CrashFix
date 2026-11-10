@@ -3,7 +3,7 @@
 //   standalone  -> bin\x64_dx12\dinput8.dll
 //   ASI plugin  -> bin\x64_dx12\W3CrashFix.asi (needs an ASI loader; the installer only checks for one and
 //                  links to Ultimate ASI Loader - the loader is a third-party project and is not included)
-// Copyright (c) 2026 Onno Struijk (Havoc) and Claude. MIT License, see LICENSE.
+// Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License, see LICENSE.
 //
 // Command line (also used to re-run itself elevated when the game folder is not writable):
 //   W3CrashFix-Installer.exe --install-standalone | --install-asi | --uninstall  "<game folder>"

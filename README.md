@@ -132,7 +132,7 @@ W3CrashFix is free. If it saved your playthrough and you'd like to say thanks, y
 
 MIT. See [LICENSE](LICENSE).
 
-**Authors:** Onno Struijk (Havoc) and Claude.
+**Authors:** Onno Struijk (Havoc104) and Claude.
 
 - Nexus Mods: [104Havoc](https://www.nexusmods.com/profile/104Havoc)
 - GitHub: [Havoc104](https://github.com/Havoc104)
