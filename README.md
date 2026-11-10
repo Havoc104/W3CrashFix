@@ -24,34 +24,34 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 ## Installation
 
-### Easiest: the installer
+Installing by hand is always recommended: it's one file, and you can see exactly what goes where. Choose **one** of the two versions. The ASI version is recommended.
 
-1. Download `W3CrashFix-<version>-Installer.exe` from the [latest release](https://github.com/Havoc104/W3CrashFix/releases/latest) and run it. On Nexus Mods, the installer comes as a zip; extract it first.
-2. The installer looks for the game in Steam, GOG and Epic. If it doesn't find it, click **Browse** and select the game folder.
-3. Choose a version (explained below) and click **Install**. You can use **Uninstall** later to remove it.
+### A. ASI plugin (`W3CrashFix.asi`) - recommended
 
-The installer checks your game version. It won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that an ASI loader is installed. If none is found, it links you to [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest). That loader is a separate project and is not included.
+It works alongside your other ASI mods.
 
-Windows may show a SmartScreen warning ("Windows protected your PC") because the installer is not code-signed. Click **More info**, then **Run anyway**. You can also install by hand as described below; it's just one file.
+1. Install an ASI loader in `<game folder>\bin\x64_dx12\`: [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest) (x64), saved as `dinput8.dll`. Skip this if you already have one.
+2. Copy `bin\x64_dx12\W3CrashFix.asi` from the zip into the same folder.
 
-### Manual installation
+### B. Standalone (`dinput8.dll`)
 
-Choose **one** of the two versions.
-
-### A. Standalone (`dinput8.dll`)
-
-Use this if you don't use other `.asi` mods.
+Use this if you don't want an ASI loader. It can't be used if another mod already uses `dinput8.dll`.
 
 1. Copy `bin\x64_dx12\dinput8.dll` from the zip into `<game folder>\bin\x64_dx12\`.
 
-### B. ASI plugin (`W3CrashFix.asi`)
-
-Use this if you already use an ASI loader, such as [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader).
-
-1. Make sure an ASI loader is installed in `<game folder>\bin\x64_dx12\`. For example, Ultimate ASI Loader saved as `dinput8.dll`.
-2. Copy `bin\x64_dx12\W3CrashFix.asi` into the same folder.
-
 If you accidentally install both versions, only the one that loads first patches the game. The other one does nothing.
+
+### Optional: the installer
+
+The installer only exists for ease of use; manual installation is still recommended.
+
+1. Download `W3CrashFix-<version>-Installer.exe` from the [latest release](https://github.com/Havoc104/W3CrashFix/releases/latest) and run it. On Nexus Mods, the installer comes as a zip; extract it first.
+2. It looks for the game in Steam, GOG and Epic. If it doesn't find it, click **Browse** and select the game folder.
+3. Choose a version and click **Install**. You can use **Uninstall** later to remove it.
+
+The installer checks your game version and won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that an ASI loader is installed. If none is found, it links you to Ultimate ASI Loader, which is a separate project and isn't included.
+
+**Windows will show a warning** ("Windows protected your PC") when you start the installer. That's normal: the installer isn't code-signed, because a signing certificate costs money. It is safe to run. It only copies the W3CrashFix file into your game folder, and its full source code is in this repository (`src\installer.c`). Click **More info**, then **Run anyway**.
 
 **Compatibility.** It works alongside ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods. These were all in use during testing.
 
