@@ -5,7 +5,7 @@
 //                  links to Ultimate ASI Loader - the loader is a third-party project and is not included)
 // Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License, see LICENSE.
 //
-// Command line (also used to re-run itself elevated when the game folder is not writable):
+// Command line (for scripts and tests):
 //   W3CrashFix-Installer.exe --install-standalone | --install-asi | --uninstall  "<game folder>"
 //   exit code = 0 or a Win32 error code
 #define WIN32_LEAN_AND_MEAN
@@ -18,7 +18,6 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <tlhelp32.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -182,13 +181,14 @@ static int game_version(const wchar_t *root, wchar_t *out, size_t n) {   // 1 = 
     return ok;
 }
 
-static int game_running(void) {
-    HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    PROCESSENTRY32W pe = { sizeof pe }; int r = 0;
-    if (s != INVALID_HANDLE_VALUE && Process32FirstW(s, &pe))
-        do { if (!_wcsicmp(pe.szExeFile, L"witcher3.exe")) r = 1; } while (!r && Process32NextW(s, &pe));
-    if (s != INVALID_HANDLE_VALUE) CloseHandle(s);
-    return r;
+// A running exe is locked by Windows: opening it with write access then fails with a sharing violation.
+// (No process enumeration needed.)
+static int game_running(const wchar_t *root) {
+    wchar_t exe[MAX_PATH]; bin_file(root, L"witcher3.exe", exe);
+    HANDLE f = CreateFileW(exe, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, 0, NULL);
+    if (f != INVALID_HANDLE_VALUE) { CloseHandle(f); return 0; }
+    return GetLastError() == ERROR_SHARING_VIOLATION;
 }
 
 // ---------------------------------------------------------------- install / uninstall
@@ -289,21 +289,10 @@ static void refresh(void) {
     ShowWindow(g_getUal, showUal ? SW_SHOW : SW_HIDE);
 }
 
-static DWORD run_elevated(const wchar_t *verb, const wchar_t *root) {
-    wchar_t self[MAX_PATH], args[MAX_PATH + 40];
-    GetModuleFileNameW(NULL, self, MAX_PATH);
-    swprintf(args, MAX_PATH + 40, L"%ls \"%ls\"", verb, root);
-    SHELLEXECUTEINFOW se = { sizeof se, SEE_MASK_NOCLOSEPROCESS, g_wnd, L"runas", self, args, NULL, SW_HIDE };
-    if (!ShellExecuteExW(&se)) return GetLastError();   // ERROR_CANCELLED if the user said no
-    WaitForSingleObject(se.hProcess, INFINITE);
-    DWORD code = 1; GetExitCodeProcess(se.hProcess, &code); CloseHandle(se.hProcess);
-    return code;
-}
-
 static void action(int install) {
     wchar_t root[MAX_PATH], ver[64];
     if (!current_root(root)) return;
-    if (game_running()) { msg(L"Please close the game first.", MB_ICONWARNING); return; }
+    if (game_running(root)) { msg(L"Please close the game first.", MB_ICONWARNING); return; }
     int asi = want_asi();
     if (install && !game_version(root, ver, 64)) {
         wchar_t q[512];
@@ -312,9 +301,13 @@ static void action(int install) {
         if (MessageBoxW(g_wnd, q, L"W3CrashFix " W3CF_VERSION, MB_YESNO | MB_ICONWARNING) != IDYES) return;
     }
     DWORD e = !install ? uninstall_all(root) : asi ? install_asi(root) : install_standalone(root);
-    if (e == ERROR_ACCESS_DENIED)
-        e = run_elevated(!install ? L"--uninstall" : asi ? L"--install-asi" : L"--install-standalone", root);
-    if (e == ERROR_CANCELLED) { refresh(); return; }
+    if (e == ERROR_ACCESS_DENIED) {
+        msg(L"Windows doesn't allow this program to write to the game folder.\n\n"
+            L"Close the installer, right-click W3CrashFix-Installer.exe, choose \"Run as administrator\" and try again.",
+            MB_ICONWARNING);
+        refresh();
+        return;
+    }
     if (e) {
         wchar_t m[512], sys[256] = L"";
         FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, e, 0, sys, 256, NULL);
