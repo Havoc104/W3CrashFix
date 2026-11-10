@@ -323,7 +323,7 @@ static void action(int install) {
     } else if (install) {
         msg(L"W3CrashFix is installed.\n\nStart the game in DirectX 12 mode and load a save. "
             L"bin\\x64_dx12\\W3CrashFix.log should then contain two lines with \"ACTIVE\".\n\n"
-            L"W3CrashFix is free. If it helps you, you can support it via the Ko-fi button.", MB_ICONINFORMATION);
+            L"W3CrashFix is free. If it helps you, you can support it with the \"Buy me a coffee\" button.", MB_ICONINFORMATION);
     } else msg(L"W3CrashFix has been removed.", MB_ICONINFORMATION);
     refresh();
 }
@@ -361,7 +361,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_rAsi = ctl(L"BUTTON", L"ASI plugin (needs an ASI loader)", BS_AUTORADIOBUTTON, 300, 126, 244, 22, ID_ASI);
         g_status = ctl(L"STATIC", L"", 0, 16, 160, 528, 112, ID_STATUS);
         g_getUal = ctl(L"BUTTON", L"Get Ultimate ASI Loader...", BS_PUSHBUTTON | WS_TABSTOP, 16, 278, 190, 28, ID_GETUAL);
-        ctl(L"BUTTON", L"♥ Support on Ko-fi", BS_PUSHBUTTON | WS_TABSTOP, 16, 322, 150, 28, ID_KOFI);
+        ctl(L"BUTTON", L"Buy me a coffee", BS_PUSHBUTTON | WS_TABSTOP, 16, 322, 150, 28, ID_KOFI);
         g_install = ctl(L"BUTTON", L"Install", BS_DEFPUSHBUTTON | WS_TABSTOP, 264, 322, 88, 28, ID_INSTALL);
         g_uninstall = ctl(L"BUTTON", L"Uninstall", BS_PUSHBUTTON | WS_TABSTOP, 360, 322, 88, 28, ID_UNINSTALL);
         ctl(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 456, 322, 88, 28, ID_CLOSE);
