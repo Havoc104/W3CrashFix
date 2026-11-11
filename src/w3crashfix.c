@@ -1,8 +1,7 @@
 // W3CrashFix - in-memory crash fixes for The Witcher 3: Wild Hunt Remastered, DX12, witcher3.exe 5.0.16.41566.
 // Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License, see LICENSE.
 //
-// Fix 1 (THE FIX below): descriptor-page leak that ends in a crash at witcher3.exe+0x280ad3d.
-// Fix 2 (FIX 2 below):   stale handle ids after fast travel that crash at witcher3.exe+0x1eecf31 / +0x1eece9d.
+// The fix (THE FIX below): descriptor-page leak that ends in a crash at witcher3.exe+0x280ad3d.
 // Also logs descriptor heap statistics to W3CrashFix.log next to the module.
 // Built as dinput8.dll (standalone proxy) or W3CrashFix.asi (for an ASI loader). Nothing on disk is modified;
 // every patch first verifies the exact game code it was written for and disables itself on any mismatch.
@@ -17,7 +16,6 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#include "idstub.h"
 
 // ---------------------------------------------------------------- dinput8 proxy
 static HMODULE g_real;
@@ -68,8 +66,6 @@ static SRWLOCK g_lk = SRWLOCK_INIT;
 #define TOMB ((void *)1)
 static long long g_live[4][2], g_liveDesc[4][2], g_created[4][2], g_failed;
 static volatile LONG64 g_rescued, g_retiredNormal;   // fix statistics
-static unsigned char *g_idstubs;                      // fix 2 stubs; their counters are the statistics
-static void fix2_stats(void);                          // defined after the fix-2 tables
 
 static size_t hsh(void *p) { return (((size_t)p >> 4) * 0x9E3779B97F4A7C15ull) >> (64 - 17); }
 static void tab_add(void *p, int t, int f, int n) {
@@ -114,7 +110,6 @@ static void summary(const char *why) {
          g_live[0][0], g_live[1][0], g_live[2][0], g_live[3][0],
          g_created[0][1], g_created[1][1], g_failed, g_rescued, g_retiredNormal, v);
     ReleaseSRWLockShared(&g_lk);
-    fix2_stats();
 }
 
 // ---------------------------------------------------------------- hooks
@@ -260,67 +255,6 @@ static void install_fix(void) {
     } else logf("fix: VirtualProtect failed %lu - FIX DISABLED", GetLastError());
 }
 
-// ---------------------------------------------------------------- FIX 2: invalid ids in a 1-based handle table
-// A game object (vtable w3+0x3828918) keeps a fixed table of 0x1c0-byte entries at +0x21B8C0, addressed by a
-// 1-based id: entry = obj + (id - 1 + 0x1345) * 0x1c0. Its methods only reject id == -1. After fast travel a
-// caller (w3+0x1d27043) passes stale ids (seen: 0 and 0x40666AEE) and the lookup reads far outside the table
-// (crashes at w3+0x1eecf31, w3+0x1eece9d). Fix: route the 9 id-taking methods through a stub that maps any id
-// outside 1..ID_MAX to -1, so each method takes its own "no such object" early return. The table must end before
-// the field at +0x663391C, which bounds it to 0x6418000 bytes = 234276 entries.
-enum { RVA_ID_VTBL = 0x3828918, ID_MAX = 234276 };
-// reg = where the 1-based table id arrives. Slots 17 and 18 take it in r8d; their edx is a separate
-// 0-based index (edx * 0x280), so id 0 in edx is valid there and must not be touched.
-static const struct { int slot; unsigned rva; int reg; const char *hex; } g_idm[] = {
-    {4,  0x1eed2e0, ID_REG_EDX, "4c8944241855565741544155415641574883ec70488d6c24"},
-    {7,  0x1eecf70, ID_REG_EDX, "83faff0f849f010000574883ec30418bf94c8bd14183f8ff"},
-    {9,  0x1eecf10, ID_REG_EDX, "458bd0458bd983faff74484183faff7442ffca4881c24513"},
-    {10, 0x1eece70, ID_REG_EDX, "458bd98bc2458bd083faff747e4183faff74788b54243085"},
-    {11, 0x1eecde0, ID_REG_EDX, "4883ec28418bc183faff746a4183f8ff746485c07460448b"},
-    {12, 0x1eecd30, ID_REG_EDX, "4883ec38418bc183faff0f848c0000004183f8ff0f848200"},
-    {13, 0x1eecbf0, ID_REG_EDX, "83faff0f842501000048895c2420574883ec20418bd9488b"},
-    {17, 0x1eecb40, ID_REG_R8D, "4183f8ff0f8498000000574883ec20498bf94c8bc983faff"},
-    {18, 0x1eeca80, ID_REG_R8D, "4183f8ff0f84ac000000534881ecd0000000488bd983faff"},
-};
-#define NIDM (sizeof g_idm / sizeof g_idm[0])
-
-static void fix2_stats(void) {
-    if (!g_idstubs) return;
-    char buf[700]; int n = 0;
-    long long z = 0, o = 0; unsigned mx = 0;
-    for (unsigned i = 0; i < NIDM; i++) {
-        unsigned char *t = g_idstubs + i * ID_STUB_SIZE;
-        id_stub_note_max(t);
-        long long zi = *(volatile LONG64 *)(t + ID_ZERO), oi = *(volatile LONG64 *)(t + ID_OTHER);
-        unsigned mi = *(unsigned *)(t + ID_MAXSEEN);
-        z += zi; o += oi; if (mi > mx) mx = mi;
-        if (zi || oi) n += snprintf(buf + n, sizeof buf - n, " s%d:%lld/%lld", g_idm[i].slot, zi, oi);
-    }
-    if (n == 0) snprintf(buf, sizeof buf, " none");
-    logf("fix2: blocked id==0 %lld, out-of-range %lld (largest 0x%X) | per slot zero/out:%s", z, o, mx, buf);
-}
-
-static void install_fix2(void) {
-    for (unsigned i = 0; i < NIDM; i++) {
-        void **slot = (void **)(g_base + RVA_ID_VTBL) + g_idm[i].slot;
-        if (*slot != g_base + g_idm[i].rva || !hexmatch(g_base + g_idm[i].rva, g_idm[i].hex)) {
-            logf("fix2: vtable slot %d / code does not match 5.0.16 - FIX 2 DISABLED", g_idm[i].slot);
-            return;
-        }
-    }
-    unsigned char *mem = VirtualAlloc(NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (!mem) { logf("fix2: VirtualAlloc failed - FIX 2 DISABLED"); return; }
-    for (unsigned i = 0; i < NIDM; i++) {
-        unsigned char *t = mem + i * ID_STUB_SIZE;
-        build_id_stub(t, g_base + g_idm[i].rva, ID_MAX, g_idm[i].reg);
-        void **slot = (void **)(g_base + RVA_ID_VTBL) + g_idm[i].slot;
-        void *dummy;
-        if (!patch(slot, t, &dummy)) { logf("fix2: VirtualProtect failed on slot %d", g_idm[i].slot); return; }
-    }
-    FlushInstructionCache(GetCurrentProcess(), mem, 0x1000);
-    g_idstubs = mem;
-    logf("fix2: invalid-id guard ACTIVE (vtable w3+0x%X, %u methods, ids 1..%u)", RVA_ID_VTBL, (unsigned)NIDM, (unsigned)ID_MAX);
-}
-
 // ---------------------------------------------------------------- init thread
 typedef HRESULT (WINAPI *D3D12CreateDevice_t)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
 typedef HRESULT (WINAPI *CreateDXGIFactory1_t)(REFIID, void **);
@@ -377,7 +311,7 @@ static DWORD WINAPI init(LPVOID unused) {
 
 // Exported by the .asi build (see w3crashfix_asi.def) so that only this one symbol is public.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.0.0-5.0.16"
+#define W3CF_VERSION "1.1.0-5.0.16"
 const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for witcher3.exe 5.0.16.41566 (DX12)"; }
 
 static HANDLE open_log(const wchar_t *path) {
@@ -417,7 +351,6 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         g_log = open_log(p);
         logf("==== W3CrashFix %s (%s) loaded, pid %lu ====", W3CF_VERSION, flavor, GetCurrentProcessId());
         install_fix();   // before any game code runs: no thread can be inside the patched function
-        if (g_base) install_fix2();
         HANDLE t = CreateThread(NULL, 0, init, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }

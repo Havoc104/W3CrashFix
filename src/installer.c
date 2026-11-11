@@ -22,7 +22,7 @@
 #include <string.h>
 #include <wchar.h>
 
-#define W3CF_VERSION   L"1.0.0-5.0.16"
+#define W3CF_VERSION   L"1.1.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
@@ -315,7 +315,7 @@ static void action(int install) {
         msg(m, MB_ICONERROR);
     } else if (install) {
         msg(L"W3CrashFix is installed.\n\nStart the game in DirectX 12 mode and load a save. "
-            L"bin\\x64_dx12\\W3CrashFix.log should then contain two lines with \"ACTIVE\".\n\n"
+            L"bin\\x64_dx12\\W3CrashFix.log should then contain a line with \"ACTIVE\".\n\n"
             L"W3CrashFix is free, but making and maintaining it costs time and money. Consider buying me a coffee "
             L"by clicking the button on the bottom left of the installer. For every cup of coffee I receive, "
             L"my cat gets a treat and some extra pets! \U0001F638", MB_ICONINFORMATION);

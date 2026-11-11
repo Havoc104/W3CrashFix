@@ -41,4 +41,4 @@ if ($Asi) {
     Copy-Item (Find-Source 'dinput8.dll') $dll -Force
     "Installed dinput8.dll in $bin"
 }
-"After starting the game, $bin\W3CrashFix.log should contain two lines with 'ACTIVE'."
+"After starting the game, $bin\W3CrashFix.log should contain a line with 'ACTIVE'."

@@ -2,14 +2,13 @@
 
 Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**) on PC.
 
-It patches two bugs in the game's code, in memory only, while the game runs. No game files are changed.
+It patches a bug in the game's code, in memory only, while the game runs. No game files are changed.
 
 **Steam version only for now.** The fix has only been confirmed on the Steam version of the game. On the Epic version it currently turns itself off and does nothing (reported by a user). The GOG version is untested.
 
-| | Bug | Symptom |
-|---|---|---|
-| **Fix 1** | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
-| **Fix 2** | After fast travel, a game system can look up objects with stale or invalid handle IDs. The lookup only rejects ID `-1`, so it reads far outside its table. | Crash shortly after fast travel. Access violation at `witcher3.exe+0x1eecf31` or `+0x1eece9d`. |
+| Bug | Symptom |
+|---|---|
+| The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
 
 **Results on the author's PC (RTX 5090, path tracing, DLSS RR + frame generation):**
 - **Before:** over 30 crashes, all at `+0x280ad3d`.
@@ -19,10 +18,10 @@ It patches two bugs in the game's code, in memory only, while the game runs. No 
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. The GOG version is untested. If you play on Epic or GOG, posting your `W3CrashFix.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.0.0-5.0.16` is mod version 1.0.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.1.0-5.0.16` is mod version 1.1.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
-**Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), each fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
+**Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
 
 ## Installation
 
@@ -62,9 +61,8 @@ The installer checks your game version and won't overwrite another mod's `dinput
 Start the game and load a save. Then open `<game folder>\bin\x64_dx12\W3CrashFix.log`. It should contain:
 
 ```
-==== W3CrashFix 1.0.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.1.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
-fix2: invalid-id guard ACTIVE (vtable w3+0x3828918, 9 methods, ids 1..234276)
 hooks installed: yes (...)
 ```
 
@@ -76,7 +74,7 @@ Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3C
 
 ## Technical details
 
-### Fix 1: descriptor page leak
+### The descriptor page leak
 
 The DX12 renderer hands out shader-visible CBV/SRV/UAV descriptors from 1024-entry "pages". Each page is its own `ID3D12DescriptorHeap`. The allocator works like this:
 
@@ -89,30 +87,29 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 
 **The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
 
-### Fix 2: invalid handle IDs after fast travel
+## Changelog
 
-One game object (vtable `+0x3828918`) keeps a fixed table of `0x1c0`-byte entries, addressed by a 1-based ID: `entry = obj + (id - 1 + 0x1345) * 0x1c0`. Its methods only reject `id == -1`.
+### 1.1.0-5.0.16
 
-After fast travel, a caller (`+0x1d27043`) was observed passing ID `0` and ID `0x40666AEE`. The second value is the float `3.6`, which means the ID was read from memory that had already been freed and reused. Both lookups read far outside the table and crashed.
+- Removed "fix 2", the guard against invalid handle IDs after fast travel. It was added after two crashes at `witcher3.exe+0x1eecf31` and `+0x1eece9d` on the author's PC. In all play sessions since then, the guard never had to block a single lookup, and a test session with heavy fast travel and without the guard didn't crash. There is no sign that those two crashes came from a bug in the game itself, so the mod no longer touches that code.
+- The descriptor page fix is unchanged.
 
-**The fix** puts a small check in front of the 9 methods that take such an ID. Any ID outside `1..234276` becomes `-1`, so the method takes the game's own "no such object" early return. 234,276 is the most entries that fit before the next field of the object.
+### 1.0.0-5.0.16
 
-The log counts how often this happens: `fix2: blocked ...`. In normal play the count is 0.
+- First release.
 
 ## Building from source
 
 You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no Visual Studio is needed.
 
 ```
-.\build.ps1            # builds build\dinput8.dll + build\W3CrashFix.asi and runs the unit test
+.\build.ps1            # builds build\dinput8.dll, build\W3CrashFix.asi and the installer
 .\build.ps1 -Package   # also creates the release zips in dist\
 .\Install-W3CrashFix.ps1 [-Asi] [-Uninstall] [-GamePath <game folder>]
 ```
 
 **Source files:**
 - `src\w3crashfix.c`: the mod.
-- `src\idstub.h`: the fix-2 guard code generator.
-- `src\test_stub.c`: unit tests for the guard code.
 - `src\test_harness.c`: loads the DLL outside the game and exercises the D3D12 hooks.
 - `src\installer.c`, `src\installer.rc`, `src\installer.manifest`: the installer. Both mod files are embedded in it.
 

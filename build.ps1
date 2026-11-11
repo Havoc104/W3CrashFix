@@ -1,5 +1,5 @@
 # Builds W3CrashFix with Zig (https://ziglang.org, any recent version; only `zig cc` is used).
-#   .\build.ps1            -> build\dinput8.dll, build\W3CrashFix.asi, build\W3CrashFix-Installer.exe, unit test (runs it)
+#   .\build.ps1            -> build\dinput8.dll, build\W3CrashFix.asi, build\W3CrashFix-Installer.exe
 #   .\build.ps1 -Package   -> also creates the release files:
 #        dist\github\  asi + standalone zips, Installer.exe, source zip   (author shown as on GitHub)
 #        dist\nexus\   asi + standalone + installer zips                 (author shown as on Nexus Mods;
@@ -36,8 +36,6 @@ Run @cc -shared -DW3_ASI -o build\W3CrashFix.asi src\w3crashfix.c src\w3crashfix
 # installer embeds both files above (see src\installer.rc), so it is built after them
 Run @cc @installerFlags -o build\W3CrashFix-Installer.exe src\installer.c src\installer.rc @guiLibs
 Set-PeChecksum build\W3CrashFix-Installer.exe
-Run @cc -o build\test_stub.exe src\test_stub.c
-& .\build\test_stub.exe; if ($LASTEXITCODE) { throw 'unit test failed' }
 'Built build\dinput8.dll, build\W3CrashFix.asi and build\W3CrashFix-Installer.exe'
 
 if ($Package) {
