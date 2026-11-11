@@ -1,4 +1,4 @@
-// W3CrashFix - in-memory crash fixes for The Witcher 3: Wild Hunt Remastered, DX12, witcher3.exe 5.0.16.41566.
+// W3CrashFix - in-memory crash fix for The Witcher 3: Wild Hunt Remastered, DX12, witcher3.exe 5.0.16.41566.
 // Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License, see LICENSE.
 //
 // The fix (THE FIX below): descriptor-page leak that ends in a crash at witcher3.exe+0x280ad3d.
