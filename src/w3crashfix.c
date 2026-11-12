@@ -118,6 +118,36 @@ typedef ULONG (STDMETHODCALLTYPE *Rel_t)(ID3D12DescriptorHeap *);
 static CDH_t o_CreateDescriptorHeap;
 static Rel_t o_HeapRelease;
 
+// Names the code that called us as "file.dll+0xOFFSET", so a log shows which DLL created a heap (the game itself,
+// the graphics driver, an upscaler, an overlay, ...). Falls back to the raw address if the module can't be found.
+static void where(void *addr, char *out, size_t n) {
+    HMODULE m = NULL; char path[MAX_PATH];
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)addr, &m) && m) {
+        DWORD len = GetModuleFileNameA(m, path, sizeof path);
+        if (len > 0 && len < sizeof path) {
+            const char *base = path;
+            for (const char *c = path; *c; c++) if (*c == '\\' || *c == '/') base = c + 1;
+            snprintf(out, n, "%s+0x%llX", base, (unsigned long long)((char *)addr - (char *)m));
+            // First time a file shows up: log its full path once. NVIDIA's downloaded DLSS files all share one
+            // file name (e.g. 160_E658700.bin), so only the folder tells which feature it is. The user's profile
+            // folder is replaced by %USERPROFILE% to keep the Windows user name out of the log.
+            static PVOID seen[64];
+            for (int i = 0; i < 64; i++) {
+                PVOID was = InterlockedCompareExchangePointer(&seen[i], m, NULL);
+                if (was == (PVOID)m) break;
+                if (was == NULL) {
+                    char prof[MAX_PATH]; DWORD pl = GetEnvironmentVariableA("USERPROFILE", prof, sizeof prof);
+                    if (pl > 0 && pl < sizeof prof && !_strnicmp(path, prof, pl)) logf("module: %s = %%USERPROFILE%%%s", base, path + pl);
+                    else logf("module: %s = %s", base, path);
+                    break;
+                }
+            }
+            return;
+        }
+    }
+    snprintf(out, n, "%p", addr);
+}
+
 static ULONG STDMETHODCALLTYPE h_HeapRelease(ID3D12DescriptorHeap *self) {
     ULONG r = o_HeapRelease(self);
     if (r == 0) {
@@ -133,19 +163,19 @@ static HRESULT STDMETHODCALLTYPE h_CreateDescriptorHeap(ID3D12Device *self, cons
                                                         REFIID riid, void **pp) {
     HRESULT hr = o_CreateDescriptorHeap(self, d, riid, pp);
     int t = (int)d->Type & 3, sv = (d->Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE) ? 1 : 0;
-    void *caller = __builtin_return_address(0);
+    char caller[96]; where(__builtin_return_address(0), caller, sizeof caller);
     if (SUCCEEDED(hr) && pp && *pp) {
         AcquireSRWLockExclusive(&g_lk);
         tab_add(*pp, t, sv, (int)d->NumDescriptors);
         g_live[t][sv]++; g_liveDesc[t][sv] += d->NumDescriptors; g_created[t][sv]++;
         long long live = g_live[t][sv], desc = g_liveDesc[t][sv], made = g_created[t][sv];
         ReleaseSRWLockExclusive(&g_lk);
-        if (sv) logf("create %s n=%u sv -> live %lld heaps / %lld desc (total created %lld) caller=%p",
+        if (sv) logf("create %s n=%u sv -> live %lld heaps / %lld desc (total created %lld) caller=%s",
                      tname(t), d->NumDescriptors, live, desc, made, caller);
     } else {
         g_failed++;
         HRESULT rr = ID3D12Device_GetDeviceRemovedReason(self);
-        logf("!!!! CreateDescriptorHeap FAILED hr=0x%08lX type=%s n=%u flags=%u caller=%p deviceRemovedReason=0x%08lX",
+        logf("!!!! CreateDescriptorHeap FAILED hr=0x%08lX type=%s n=%u flags=%u caller=%s deviceRemovedReason=0x%08lX",
              (unsigned long)hr, tname(t), d->NumDescriptors, d->Flags, caller, (unsigned long)rr);
         summary("FAILURE");
     }
@@ -177,12 +207,12 @@ enum {
     P_PENDING = 0x8, P_FRAMEUSES = 0xc,                                            // page fields
     V_DATA = 0x0, V_COUNT = 0x10, V_CAPACITY = 0x18,                                // game vector
 };
-static const struct { unsigned rva; const char *hex; } g_sig[] = {
-    {RVA_ENSURE,     "40534883ec200311488bd93b91300100000f8e8c00000048"},
-    {RVA_FORCENEW,   "48895c2408574883ec20488db9e8000000488bd9488b4710"},
-    {RVA_INVALIDATE, "4881c15801000041b8040000004533c9488b41f84885c074"},
-    {RVA_CREATEPAGE, "48895c2410574883ec308b81300100004c8d4c2440894424"},
-    {RVA_VECGROW,    "48895c241048896c24184889742420574883ec304c8b4118"},
+static const struct { unsigned rva; const char *name, *hex; } g_sig[] = {
+    {RVA_ENSURE,     "ensure",     "40534883ec200311488bd93b91300100000f8e8c00000048"},
+    {RVA_FORCENEW,   "forcenew",   "48895c2408574883ec20488db9e8000000488bd9488b4710"},
+    {RVA_INVALIDATE, "invalidate", "4881c15801000041b8040000004533c9488b41f84885c074"},
+    {RVA_CREATEPAGE, "createpage", "48895c2410574883ec308b81300100004c8d4c2440894424"},
+    {RVA_VECGROW,    "vecgrow",    "48895c241048896c24184889742420574883ec304c8b4118"},
 };
 static unsigned char *g_base;
 typedef void (*Invalidate_t)(unsigned char *alloc, void *page);
@@ -234,13 +264,93 @@ static int hexmatch(const unsigned char *p, const char *hex) {
     return 1;
 }
 
+// ---------------------------------------------------------------- diagnostic for unsupported game builds
+// When the game's code is not the build this fix was written for (another store's executable, a game update),
+// nothing is patched. To make it possible to add support without having that executable, the log then describes
+// the build: its PE header values, the code bytes found where each function was expected, and where in the
+// executable the same code pattern does occur. Read-only; a few dozen bytes of code per function, no user data.
+static int readable(const unsigned char *p, size_t n) {
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery(p, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
+    return (const unsigned char *)mi.BaseAddress + mi.RegionSize >= p + n;
+}
+static int hexbytes(const char *hex, unsigned char *out, int max) {
+    int n = 0;
+    for (; hex[0] && hex[1] && n < max; hex += 2) { char b[3] = {hex[0], hex[1], 0}; out[n++] = (unsigned char)strtoul(b, NULL, 16); }
+    return n;
+}
+static void hexstr(const unsigned char *p, int n, char *out) {
+    for (int i = 0; i < n; i++) out += sprintf(out, "%02x", p[i]);
+    *out = 0;
+}
+// Calls cb(rva) for every occurrence of pat in the executable sections of the image; returns the count.
+static int scan(const unsigned char *pat, int n, unsigned *hits, int maxhits) {
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    int count = 0;
+    for (unsigned s = 0; s < nt->FileHeader.NumberOfSections; s++) {
+        if (!(sec[s].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        const unsigned char *p = g_base + sec[s].VirtualAddress, *end = p + sec[s].Misc.VirtualSize;
+        while (p < end) {                                    // walk the section one committed region at a time
+            MEMORY_BASIC_INFORMATION mi;
+            if (!VirtualQuery(p, &mi, sizeof mi)) break;
+            const unsigned char *rend = (const unsigned char *)mi.BaseAddress + mi.RegionSize;
+            if (rend > end) rend = end;
+            if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+                for (const unsigned char *q = p; q + n <= rend; q++) {
+                    q = memchr(q, pat[0], (size_t)(rend - q) - n + 1);
+                    if (!q) break;
+                    if (!memcmp(q, pat, n)) { if (count < maxhits) hits[count] = (unsigned)(q - g_base); count++; }
+                }
+            p = rend;
+        }
+    }
+    return count;
+}
+static void diagnose(void) {
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
+    DWORD image = nt->OptionalHeader.SizeOfImage;
+    wchar_t exe[MAX_PATH]; WIN32_FILE_ATTRIBUTE_DATA fa = {0};
+    GetModuleFileNameW(NULL, exe, MAX_PATH); GetFileAttributesExW(exe, GetFileExInfoStandard, &fa);
+    logf("diag: this build of the game is not supported yet. The 'diag:' lines describe it (game code locations only,");
+    logf("diag: nothing personal). Posting this log on the mod page is what is needed to add support for your version.");
+    logf("diag: exe timestamp 0x%08lX, image size 0x%lX, checksum 0x%lX, file size %llu",
+         (unsigned long)nt->FileHeader.TimeDateStamp, (unsigned long)image, (unsigned long)nt->OptionalHeader.CheckSum,
+         ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow);
+    int moved = 0, total = (int)(sizeof g_sig / sizeof g_sig[0]);
+    for (int i = 0; i < total; i++) {
+        unsigned char pat[32], *at = g_base + g_sig[i].rva; char hx[2 * 48 + 1];
+        int n = hexbytes(g_sig[i].hex, pat, sizeof pat);
+        if ((unsigned long long)g_sig[i].rva + 48 <= image && readable(at, 48)) {
+            if (!memcmp(at, pat, n)) { logf("diag: %s: as expected at w3+0x%X", g_sig[i].name, g_sig[i].rva); moved++; continue; }
+            hexstr(at, 48, hx); logf("diag: %s: not at w3+0x%X, found there: %s", g_sig[i].name, g_sig[i].rva, hx);
+        } else logf("diag: %s: w3+0x%X is outside this executable", g_sig[i].name, g_sig[i].rva);
+        unsigned hits[4]; int c = scan(pat, n, hits, 4);
+        if (c > 0) {
+            char where[80] = ""; for (int k = 0; k < c && k < 4; k++) sprintf(where + strlen(where), " w3+0x%X", hits[k]);
+            logf("diag: %s: same code found %d time(s) at:%s", g_sig[i].name, c, where);
+            if (c == 1) moved++;
+        } else {
+            c = scan(pat, 12, hits, 3);                      // function start only: the body differs in this build
+            logf("diag: %s: same code not found; %d place(s) start the same way", g_sig[i].name, c);
+            for (int k = 0; k < c && k < 3; k++)
+                if (readable(g_base + hits[k], 48)) { hexstr(g_base + hits[k], 48, hx); logf("diag: %s:   w3+0x%X: %s", g_sig[i].name, hits[k], hx); }
+        }
+    }
+    logf("diag: %d of %d functions located%s", moved, total,
+         moved == total ? " - this build can probably be supported with a small update" : "");
+}
+
 static void install_fix(void) {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH);
     if (!wcsstr(exe, L"witcher3.exe")) { logf("fix: not witcher3.exe - disabled"); return; }
     g_base = (unsigned char *)GetModuleHandleW(NULL);
+    DWORD image = ((IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew))->OptionalHeader.SizeOfImage;
     for (unsigned i = 0; i < sizeof g_sig / sizeof g_sig[0]; i++)
-        if (!hexmatch(g_base + g_sig[i].rva, g_sig[i].hex)) {
-            logf("fix: code at w3+0x%X does not match 5.0.16 - game was updated? FIX DISABLED (probe still logs)", g_sig[i].rva);
+        if ((unsigned long long)g_sig[i].rva + 24 > image || !readable(g_base + g_sig[i].rva, 24) ||
+            !hexmatch(g_base + g_sig[i].rva, g_sig[i].hex)) {
+            logf("fix: code at w3+0x%X does not match the supported game build (Steam, 5.0.16) - FIX DISABLED (probe still logs)", g_sig[i].rva);
+            diagnose();
             return;
         }
     unsigned char jmp[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};   // mov rax, imm64 ; jmp rax
@@ -311,7 +421,7 @@ static DWORD WINAPI init(LPVOID unused) {
 
 // Exported by the .asi build (see w3crashfix_asi.def) so that only this one symbol is public.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.1.0-5.0.16"
+#define W3CF_VERSION "1.2.0-5.0.16"
 const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for witcher3.exe 5.0.16.41566 (DX12)"; }
 
 static HANDLE open_log(const wchar_t *path) {

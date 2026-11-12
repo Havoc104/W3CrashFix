@@ -18,10 +18,17 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. The GOG version is untested. If you play on Epic or GOG, posting your `W3CrashFix.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.1.0-5.0.16` is mod version 1.1.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.2.0-5.0.16` is mod version 1.2.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
+
+### Tested with
+
+- The Witcher 3: Wild Hunt Remastered, Steam version, 5.0.16.41566, DirectX 12.
+- DLSS 5 through the RenoDX DLSS add-on by ShortFuse (build 2026-10-16) with ReShade, in DLSS-NR mode, with `nvngx_dlssnr.dll` 310.8.SF. Installed with DLSS5oneclick.
+
+Other ways of installing DLSS 5 (for example DLSS Manager) are untested.
 
 ## Installation
 
@@ -61,7 +68,7 @@ The installer checks your game version and won't overwrite another mod's `dinput
 Start the game and load a save. Then open `<game folder>\bin\x64_dx12\W3CrashFix.log`. It should contain:
 
 ```
-==== W3CrashFix 1.1.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.2.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -89,6 +96,13 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 
 ## Changelog
 
+### 1.2.0-5.0.16
+
+- The log now names the file that created each descriptor heap, for example `caller=witcher3.exe+0x2809F44` instead of a bare address. The first time a file shows up, its full path is logged once (a path inside your user profile is written as `%USERPROFILE%`). This shows whether heaps come from the game itself or from another DLL, such as a DLSS add-on.
+- On a game build the mod doesn't recognise (another store version or a game update), the log now gets `diag:` lines that describe where the game's code differs. Posting that log is what is needed to add support for that build. As before, nothing is patched in that case.
+- Added a "Tested with" section that names the DLSS 5 setup used during testing.
+- The descriptor page fix is unchanged.
+
 ### 1.1.0-5.0.16
 
 - Removed "fix 2", the guard against invalid handle IDs after fast travel. It was added after two crashes at `witcher3.exe+0x1eecf31` and `+0x1eece9d` on the author's PC. In all play sessions since then, the guard never had to block a single lookup, and a test session with heavy fast travel and without the guard didn't crash. There is no sign that those two crashes came from a bug in the game itself, so the mod no longer touches that code.
@@ -111,6 +125,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 **Source files:**
 - `src\w3crashfix.c`: the mod.
 - `src\test_harness.c`: loads the DLL outside the game and exercises the D3D12 hooks.
+- `src\test_diag.c`: test for the unsupported-build diagnostic and the caller names in the log. `build.ps1` builds and runs it.
 - `src\installer.c`, `src\installer.rc`, `src\installer.manifest`: the installer. Both mod files are embedded in it.
 
 ## FAQ

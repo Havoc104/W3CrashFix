@@ -38,6 +38,27 @@ Run @cc @installerFlags -o build\W3CrashFix-Installer.exe src\installer.c src\in
 Set-PeChecksum build\W3CrashFix-Installer.exe
 'Built build\dinput8.dll, build\W3CrashFix.asi and build\W3CrashFix-Installer.exe'
 
+# Test: a stand-in "witcher3.exe" that is not the game (src\test_diag.c). The mod must leave it unpatched, describe it
+# in 'diag:' lines, and - if this PC has a D3D12 device - name the caller of a descriptor heap.
+$t = 'build\test\diag'
+New-Item -ItemType Directory -Force $t | Out-Null
+Remove-Item "$t\*.log" -ErrorAction SilentlyContinue
+Run @cc -municode -o "$t\witcher3.exe" src\test_diag.c -ld3d12 -ldxguid
+Copy-Item build\W3CrashFix.asi $t -Force
+$out = & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" heap
+$code = $LASTEXITCODE
+$log = if (Test-Path "$t\W3CrashFix.log") { Get-Content "$t\W3CrashFix.log" -Raw } else { '' }
+foreach ($need in 'FIX DISABLED', 'diag: 4 of 5 functions located', 'ensure: same code found 1 time') {
+    if (-not $log.Contains($need)) { throw "test_diag: log lacks '$need'" }
+}
+if ($log.Contains('ACTIVE')) { throw 'test_diag: the mod patched a program that is not the game' }
+if ($code -eq 0) {
+    if ($log -notmatch 'caller=witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: heap caller was not named' }
+    if ($log -notmatch 'module: witcher3\.exe = ') { throw 'test_diag: module path line missing' }
+    'Test passed: diagnostic and caller names'
+} elseif ($code -eq 3) { 'Test passed: diagnostic (no D3D12 device here, caller names not tested)' }
+else { throw "test_diag exited with $code`: $out" }
+
 if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value
     try { if (Test-Path dist) { Remove-Item dist -Recurse -Force -ErrorAction Stop } }
