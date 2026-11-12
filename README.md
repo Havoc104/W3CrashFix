@@ -4,7 +4,7 @@ Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**)
 
 It patches a bug in the game's code, in memory only, while the game runs. No game files are changed.
 
-**Steam version only for now.** The fix has only been confirmed on the Steam version of the game. On the Epic version it currently turns itself off and does nothing (reported by a user). The GOG version is untested.
+**Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it also switches itself on (reported by a user), but there is no long-term test result from GOG yet. On the Epic version it currently turns itself off and does nothing (reported by a user). Any other store version is untested.
 
 | Bug | Symptom |
 |---|---|
@@ -16,9 +16,9 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 ## Requirements
 
-- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. The GOG version is untested. If you play on Epic or GOG, posting your `W3CrashFix.log` in an issue helps to add support.
+- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.2.0-5.0.16` is mod version 1.2.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.3.0-5.0.16` is mod version 1.3.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -72,7 +72,7 @@ The installer checks your game version and won't overwrite another mod's `dinput
 Start the game and load a save. Then open `<game folder>\bin\x64_dx12\W3CrashFix.log`. It should contain:
 
 ```
-==== W3CrashFix 1.2.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.3.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -99,6 +99,12 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 **The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
 
 ## Changelog
+
+### 1.3.0-5.0.16
+
+- The GOG version is now listed as supported: a user's log shows the fix switches itself on there, at the same addresses as on Steam. There is no long-term test result from GOG yet.
+- In the log, NVIDIA's downloaded DLSS files now show their feature folder, for example `dlssg\160_E658700.bin` instead of `160_E658700.bin`. Several of those files share one file name, so the name alone didn't say which one created a heap.
+- The descriptor page fix is unchanged.
 
 ### 1.2.0-5.0.16
 

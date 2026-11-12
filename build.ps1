@@ -55,6 +55,14 @@ if ($log.Contains('ACTIVE')) { throw 'test_diag: the mod patched a program that 
 if ($code -eq 0) {
     if ($log -notmatch 'caller=witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: heap caller was not named' }
     if ($log -notmatch 'module: witcher3\.exe = ') { throw 'test_diag: module path line missing' }
+    # Same program run from a folder laid out like NVIDIA's downloaded DLSS files: the feature folder must show.
+    $ngx = "$t\NGX\models\dlssg\versions\1\files"
+    New-Item -ItemType Directory -Force $ngx | Out-Null
+    Remove-Item "$ngx\*.log" -ErrorAction SilentlyContinue
+    Copy-Item "$t\witcher3.exe", "$t\W3CrashFix.asi" $ngx -Force
+    & "$ngx\witcher3.exe" "$PWD\$ngx\W3CrashFix.asi" heap | Out-Null
+    $log2 = if (Test-Path "$ngx\W3CrashFix.log") { Get-Content "$ngx\W3CrashFix.log" -Raw } else { '' }
+    if ($log2 -notmatch 'caller=dlssg\\witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: feature folder missing from the caller name' }
     'Test passed: diagnostic and caller names'
 } elseif ($code -eq 3) { 'Test passed: diagnostic (no D3D12 device here, caller names not tested)' }
 else { throw "test_diag exited with $code`: $out" }

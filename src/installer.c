@@ -22,7 +22,7 @@
 #include <string.h>
 #include <wchar.h>
 
-#define W3CF_VERSION   L"1.2.0-5.0.16"
+#define W3CF_VERSION   L"1.3.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"

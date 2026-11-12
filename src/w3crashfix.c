@@ -125,8 +125,19 @@ static void where(void *addr, char *out, size_t n) {
     if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)addr, &m) && m) {
         DWORD len = GetModuleFileNameA(m, path, sizeof path);
         if (len > 0 && len < sizeof path) {
-            const char *base = path;
-            for (const char *c = path; *c; c++) if (*c == '\\' || *c == '/') base = c + 1;
+            const char *file = path;
+            for (const char *c = path; *c; c++) if (*c == '\\' || *c == '/') file = c + 1;
+            // NVIDIA's downloaded DLSS files (...\NGX\models\<feature>\versions\<n>\files\160_E658700.bin) have the
+            // same file name for every feature, so the feature folder is put in front: "dlssg\160_E658700.bin".
+            char name[128]; const char *base = file;
+            static const char ngx[] = "\\NGX\\models\\";
+            for (const char *c = path; c < file; c++) {
+                if (_strnicmp(c, ngx, sizeof ngx - 1)) continue;
+                const char *feat = c + sizeof ngx - 1, *end = feat;
+                while (*end && *end != '\\' && *end != '/') end++;
+                if (end > feat && end < file) { snprintf(name, sizeof name, "%.*s\\%s", (int)(end - feat), feat, file); base = name; }
+                break;
+            }
             snprintf(out, n, "%s+0x%llX", base, (unsigned long long)((char *)addr - (char *)m));
             // First time a file shows up: log its full path once. NVIDIA's downloaded DLSS files all share one
             // file name (e.g. 160_E658700.bin), so only the folder tells which feature it is. The user's profile
@@ -349,7 +360,7 @@ static void install_fix(void) {
     for (unsigned i = 0; i < sizeof g_sig / sizeof g_sig[0]; i++)
         if ((unsigned long long)g_sig[i].rva + 24 > image || !readable(g_base + g_sig[i].rva, 24) ||
             !hexmatch(g_base + g_sig[i].rva, g_sig[i].hex)) {
-            logf("fix: code at w3+0x%X does not match the supported game build (Steam, 5.0.16) - FIX DISABLED (probe still logs)", g_sig[i].rva);
+            logf("fix: code at w3+0x%X does not match the supported game build (Steam or GOG, 5.0.16) - FIX DISABLED (probe still logs)", g_sig[i].rva);
             diagnose();
             return;
         }
@@ -421,7 +432,7 @@ static DWORD WINAPI init(LPVOID unused) {
 
 // Exported by the .asi build (see w3crashfix_asi.def) so that only this one symbol is public.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.2.0-5.0.16"
+#define W3CF_VERSION "1.3.0-5.0.16"
 const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for witcher3.exe 5.0.16.41566 (DX12)"; }
 
 static HANDLE open_log(const wchar_t *path) {
