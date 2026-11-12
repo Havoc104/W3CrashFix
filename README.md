@@ -10,7 +10,7 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 |---|---|
 | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
 
-**Results on the author's PC (RTX 5090, path tracing, DLSS RR + frame generation):**
+**Results on the author's PC (see "Tested with" below for the full setup):**
 - **Before:** over 30 crashes, all at `+0x280ad3d`.
 - **With the fix:** the live heap count stays flat at 7–9 heaps instead of climbing to about 4,000. Many hours of play, including the spots that used to crash every time, heavy fast travel and combat: no crashes.
 
@@ -26,7 +26,11 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 ### Tested with
 
 - The Witcher 3: Wild Hunt Remastered, Steam version, 5.0.16.41566, DirectX 12.
-- DLSS 5 through the RenoDX DLSS add-on by ShortFuse (build 2026-10-16) with ReShade, in DLSS-NR mode, with `nvngx_dlssnr.dll` 310.8.SF. Installed with DLSS5oneclick.
+- Ryzen 9 9950X3D, 64 GB RAM, RTX 5090 (32 GB), Windows 11, NVIDIA driver 32.0.16.2114.
+- 4K, borderless window, HDR, VSync on, 60 fps limit (applies to the base frame rate).
+- All graphics settings at maximum, path tracing on, NVIDIA HairWorks on.
+- DLSS 5 in Quality mode with Ray Reconstruction and dynamic frame generation, through the RenoDX DLSS add-on by ShortFuse (build 2026-10-16) with ReShade 6.8.0, in DLSS-NR mode, with `nvngx_dlssnr.dll` 310.8.SF. Installed with DLSS5oneclick.
+- Other mods: RT Shadow Fixes.
 
 Other ways of installing DLSS 5 (for example DLSS Manager) are untested.
 
