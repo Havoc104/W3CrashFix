@@ -146,6 +146,12 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 **Will CD Projekt RED fix this?** Hopefully. Once the game is updated with a fix, this mod disables itself automatically.
 
+## About the author
+
+> I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
+
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, and the updates since then with the newer Claude Fable 5.2 model. Everything was tested over many hours of play before publishing.
+
 ## Support
 
 W3CrashFix is free. If it saved your playthrough and you'd like to say thanks, you can buy me a coffee on Ko-fi:
