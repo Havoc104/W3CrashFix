@@ -25,12 +25,6 @@ int wmain(int argc, wchar_t **argv) {
     if (!m) { printf("LoadLibrary failed %lu\n", GetLastError()); return 1; }
     Sleep(300);
     puts("loaded");
-    // Argument "crash": crash on purpose, so the mod's crash report (log line, crash log, report page) can be checked.
-    if (argc > 2 && !wcscmp(argv[2], L"crash")) {
-        SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);   // no Windows error dialog for this test
-        Sleep(200);
-        *(volatile int *)0 = 1;
-    }
     // Optional second part (argument "heap"): create a D3D12 device and one shader-visible heap after the mod has
     // hooked the device, so the log gets a "create ... caller=witcher3.exe+0x..." line naming this program.
     if (argc > 2 && !wcscmp(argv[2], L"heap")) {

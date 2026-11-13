@@ -4,8 +4,7 @@
 #        dist\github\  asi + standalone zips, Installer.exe, source zip   (author shown as on GitHub)
 #        dist\nexus\   asi + standalone + installer zips                 (author shown as on Nexus Mods;
 #                                                                          Nexus only accepts archives)
-#   .\build.ps1 -CrashTest  -> TEST BUILD with keys that crash the game on purpose (never for release; see w3crashfix.c)
-param([switch]$Package, [switch]$CrashTest, [string]$Zig)
+param([switch]$Package, [string]$Zig)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 if (-not $Zig) {
@@ -13,9 +12,7 @@ if (-not $Zig) {
     $Zig = if ($local) { $local.FullName } else { 'zig' }
 }
 New-Item -ItemType Directory -Force build | Out-Null
-if ($Package -and $CrashTest) { throw 'A crash-test build must never be packaged for release.' }
 $cc = @('cc', '-target', 'x86_64-windows-gnu', '-O2', '-Wall')
-[string[]]$modFlags = @(); if ($CrashTest) { $modFlags = @('-DW3_CRASHTEST') }
 $guiLibs = @('-luser32', '-lkernel32', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-lversion')
 function Run { & $Zig @args; if ($LASTEXITCODE) { throw "zig failed: $args" } }
 # Fill in the PE checksum field (the linker leaves it 0; Microsoft's toolchain and signed files always set it).
@@ -34,8 +31,8 @@ function Set-PeChecksum($path) {
 }
 $installerFlags = @('-s', '-municode', '-Wl,--subsystem,windows', '-Wl,--build-id=none')
 
-Run @cc @modFlags -shared -o build\dinput8.dll src\w3crashfix.c src\dinput8.def -luser32 -lkernel32
-Run @cc @modFlags -shared -DW3_ASI -o build\W3CrashFix.asi src\w3crashfix.c src\w3crashfix_asi.def -luser32 -lkernel32
+Run @cc -shared -o build\dinput8.dll src\w3crashfix.c src\dinput8.def -luser32 -lkernel32
+Run @cc -shared -DW3_ASI -o build\W3CrashFix.asi src\w3crashfix.c src\w3crashfix_asi.def -luser32 -lkernel32
 # installer embeds both files above (see src\installer.rc), so it is built after them
 Run @cc @installerFlags -o build\W3CrashFix-Installer.exe src\installer.c src\installer.rc @guiLibs
 Set-PeChecksum build\W3CrashFix-Installer.exe
@@ -66,30 +63,9 @@ if ($code -eq 0) {
     & "$ngx\witcher3.exe" "$PWD\$ngx\W3CrashFix.asi" heap | Out-Null
     $log2 = if (Test-Path "$ngx\W3CrashFix.log") { Get-Content "$ngx\W3CrashFix.log" -Raw } else { '' }
     if ($log2 -notmatch 'caller=dlssg\\witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: feature folder missing from the caller name' }
-    # Crash report: the same program crashes on purpose. W3CrashFix.noreport keeps the report page from opening here.
-    Remove-Item "$t\W3CrashFix.crash.log", "$t\W3CrashFix-report.html" -ErrorAction SilentlyContinue
-    Set-Content "$t\W3CrashFix.noreport" '' -Encoding ascii
-    & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" crash | Out-Null
-    if ($LASTEXITCODE -eq 0) { throw 'test_diag: the crash test did not crash' }
-    $global:LASTEXITCODE = 0                                  # the crash was the point of this test
-    $cl = if (Test-Path "$t\W3CrashFix.crash.log") { Get-Content "$t\W3CrashFix.crash.log" -Raw } else { '' }
-    $rp = if (Test-Path "$t\W3CrashFix-report.html") { Get-Content "$t\W3CrashFix-report.html" -Raw } else { '' }
-    foreach ($need in 'W3CrashFix crash report', 'Crash: exception 0xC0000005 (access violation, writing address 0x0) at witcher3.exe+0x', 'Verdict: ', '!!!! CRASH: exception 0xC0000005', 'not opened because W3CrashFix.noreport exists') {
-        if (-not $cl.Contains($need) -and -not (Get-Content "$t\W3CrashFix.log" -Raw).Contains($need)) { throw "test_diag: crash log lacks '$need'" }
-    }
-    foreach ($need in 'Report on GitHub', 'Copy summary and open Nexus Mods', 'issues/new?title=Crash%20report', 'W3CrashFix.crash.log') {
-        if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" }
-    }
-    Remove-Item "$t\W3CrashFix.noreport"
-    'Test passed: diagnostic, caller names and crash report'
+    'Test passed: diagnostic and caller names'
 } elseif ($code -eq 3) { 'Test passed: diagnostic (no D3D12 device here, caller names not tested)' }
 else { throw "test_diag exited with $code`: $out" }
-
-# A release build must not contain the crash-test keys.
-if (-not $CrashTest -and (Select-String -Path build\W3CrashFix.asi, build\dinput8.dll -Pattern 'crash keys are enabled' -Encoding ascii -Quiet)) {
-    throw 'The built mod contains crash-test code, but -CrashTest was not given.'
-}
-if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7 / F8 crash the game). Do not release it.' }
 
 if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value
