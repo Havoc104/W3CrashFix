@@ -18,7 +18,7 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.3.0-5.0.16` is mod version 1.3.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.4.0-5.0.16` is mod version 1.4.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -72,12 +72,24 @@ The installer checks your game version and won't overwrite another mod's `dinput
 Start the game and load a save. Then open `<game folder>\bin\x64_dx12\W3CrashFix.log`. It should contain:
 
 ```
-==== W3CrashFix 1.3.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.4.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
 
-Every 30 seconds the mod adds a status line to the log, including live descriptor-heap counts. The previous session's log is kept as `W3CrashFix.previous.log`, which helps after a crash.
+Every 30 seconds the mod adds a status line to the log, including live descriptor-heap counts. The previous session's log is kept as `W3CrashFix.previous.log`.
+
+### If the game crashes
+
+Since 1.4.0 the mod notices a crash and helps you report it:
+
+- It writes what crashed (file and offset) into the log.
+- It saves the crashed session as `W3CrashFix.crash.log`, with a short summary on top: mod version, whether the fix was active, the crash address, heap counts, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file.
+- It opens a small page from your own PC, `W3CrashFix-report.html`, with that summary and two buttons: **Report on GitHub** opens a new issue with the summary filled in, and **Copy summary and open Nexus Mods** copies it and opens the mod's Posts tab.
+
+**The mod itself sends nothing.** Nothing leaves your PC unless you click one of the buttons and submit the report yourself. The summary contains no file paths or user names.
+
+If you don't want the page to open after a crash, create an empty file named `W3CrashFix.noreport` next to the mod in `bin\x64_dx12`. The crash log is still saved.
 
 ### Uninstall
 
@@ -99,6 +111,11 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 **The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
 
 ## Changelog
+
+### 1.4.0-5.0.16
+
+- New: crash report. When the game crashes, the mod writes what crashed into the log, saves the session as `W3CrashFix.crash.log` with a summary and a verdict, and opens a local page with two buttons to report it (GitHub or Nexus Mods). The mod itself sends nothing. See [If the game crashes](#if-the-game-crashes).
+- The descriptor page fix is unchanged.
 
 ### 1.3.0-5.0.16
 
@@ -129,13 +146,14 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 ```
 .\build.ps1            # builds build\dinput8.dll, build\W3CrashFix.asi and the installer
 .\build.ps1 -Package   # also creates the release zips in dist\
+.\build.ps1 -CrashTest # test build with keys that crash the game on purpose; never packaged or released
 .\Install-W3CrashFix.ps1 [-Asi] [-Uninstall] [-GamePath <game folder>]
 ```
 
 **Source files:**
 - `src\w3crashfix.c`: the mod.
 - `src\test_harness.c`: loads the DLL outside the game and exercises the D3D12 hooks.
-- `src\test_diag.c`: test for the unsupported-build diagnostic and the caller names in the log. `build.ps1` builds and runs it.
+- `src\test_diag.c`: test for the unsupported-build diagnostic, the caller names in the log and the crash report. `build.ps1` builds and runs it.
 - `src\installer.c`, `src\installer.rc`, `src\installer.manifest`: the installer. Both mod files are embedded in it.
 
 ## FAQ

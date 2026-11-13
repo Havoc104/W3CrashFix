@@ -65,6 +65,7 @@ static Ent g_tab[CAP];
 static SRWLOCK g_lk = SRWLOCK_INIT;
 #define TOMB ((void *)1)
 static long long g_live[4][2], g_liveDesc[4][2], g_created[4][2], g_failed;
+static long long g_peakSv[2];                        // highest live shader-visible heap count (CBV_SRV_UAV, SAMPLER)
 static volatile LONG64 g_rescued, g_retiredNormal;   // fix statistics
 
 static size_t hsh(void *p) { return (((size_t)p >> 4) * 0x9E3779B97F4A7C15ull) >> (64 - 17); }
@@ -179,6 +180,7 @@ static HRESULT STDMETHODCALLTYPE h_CreateDescriptorHeap(ID3D12Device *self, cons
         AcquireSRWLockExclusive(&g_lk);
         tab_add(*pp, t, sv, (int)d->NumDescriptors);
         g_live[t][sv]++; g_liveDesc[t][sv] += d->NumDescriptors; g_created[t][sv]++;
+        if (sv && t < 2 && g_live[t][sv] > g_peakSv[t]) g_peakSv[t] = g_live[t][sv];
         long long live = g_live[t][sv], desc = g_liveDesc[t][sv], made = g_created[t][sv];
         ReleaseSRWLockExclusive(&g_lk);
         if (sv) logf("create %s n=%u sv -> live %lld heaps / %lld desc (total created %lld) caller=%s",
@@ -226,6 +228,11 @@ static const struct { unsigned rva; const char *name, *hex; } g_sig[] = {
     {RVA_VECGROW,    "vecgrow",    "48895c241048896c24184889742420574883ec304c8b4118"},
 };
 static unsigned char *g_base;
+static wchar_t g_dir[MAX_PATH];                      // folder of the mod, with trailing backslash
+static int g_buildOk, g_fixActive;                   // game code recognised / detour installed
+#ifdef W3_CRASHTEST
+static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash
+#endif
 typedef void (*Invalidate_t)(unsigned char *alloc, void *page);
 typedef void *(*CreatePage_t)(unsigned char *alloc);
 typedef void (*VecGrow_t)(unsigned char *vec, long long elemSize);
@@ -242,6 +249,15 @@ static void vec_push(unsigned char *v, void *x) {
 }
 
 static void fixed_ensure(unsigned char *a, int n) {
+#ifdef W3_CRASHTEST
+    // Test builds only: reproduce the real crash. The game stores a NULL page when it can't create another heap
+    // and then crashes at w3+0x280ad3d; doing the same here gives that exact crash on demand.
+    if (InterlockedCompareExchange(&g_testCrash, 2, 1) == 1) {
+        logf("TEST: storing a NULL page, as the game does when it runs out of descriptor heaps");
+        FPTR(a, A_CUR) = NULL; F32(a, A_USED) = 0;
+        return;
+    }
+#endif
     if (F32(a, A_USED) + n <= F32(a, A_CAP)) return;
     void *old = FPTR(a, A_CUR);
     if (old) {
@@ -364,6 +380,17 @@ static void install_fix(void) {
             diagnose();
             return;
         }
+    g_buildOk = 1;
+#ifdef W3_CRASHTEST
+    {   // Test builds only: an empty file W3CrashFix.nofix next to the mod leaves the fix out, so the real crash
+        // can be awaited with the crash report active. A release build ignores such a file.
+        wchar_t off[MAX_PATH]; lstrcpyW(off, g_dir); lstrcatW(off, L"W3CrashFix.nofix");
+        if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) {
+            logf("fix: NOT installed because W3CrashFix.nofix exists (test build) - the game will leak descriptor heaps and crash");
+            return;
+        }
+    }
+#endif
     unsigned char jmp[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};   // mov rax, imm64 ; jmp rax
     void *target = (void *)fixed_ensure;
     memcpy(jmp + 2, &target, 8);
@@ -372,9 +399,213 @@ static void install_fix(void) {
         memcpy(g_base + RVA_ENSURE, jmp, sizeof jmp);
         VirtualProtect(g_base + RVA_ENSURE, sizeof jmp, old, &old);
         FlushInstructionCache(GetCurrentProcess(), g_base + RVA_ENSURE, sizeof jmp);
+        g_fixActive = 1;
         logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", RVA_ENSURE);
     } else logf("fix: VirtualProtect failed %lu - FIX DISABLED", GetLastError());
 }
+
+// ---------------------------------------------------------------- crash report
+// When the game crashes, the mod writes what crashed into the log, saves the session as W3CrashFix.crash.log with a
+// short summary on top, and writes W3CrashFix-report.html next to it and opens that page. The page shows the summary
+// and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
+// sent by the mod itself. An empty file named W3CrashFix.noreport next to the mod stops the page from opening.
+#define RVA_CRASH 0x280ad3d
+// <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
+#define W3CF_VERSION "1.4.0-5.0.16"
+static const char *g_flavor = "";
+static char g_adapterName[128] = "unknown";
+static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
+static volatile LONG g_crashed, g_noticed;
+static char g_crSum[2048], g_crBody[2400], g_crEnc[8192], g_crEsc[4096], g_crBuf[65536];
+
+static const char *exc_name(DWORD c) {
+    switch (c) {
+    case EXCEPTION_ACCESS_VIOLATION:      return "access violation";
+    case EXCEPTION_IN_PAGE_ERROR:         return "in-page error";
+    case EXCEPTION_ILLEGAL_INSTRUCTION:   return "illegal instruction";
+    case EXCEPTION_PRIV_INSTRUCTION:      return "privileged instruction";
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:    return "division by zero";
+    case EXCEPTION_STACK_OVERFLOW:        return "stack overflow";
+    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "array bounds exceeded";
+    case 0xC0000409:                      return "fail-fast / stack buffer overrun";
+    case 0xC0000374:                      return "heap corruption";
+    case 0xE06D7363:                      return "unhandled C++ exception";
+    default:                              return "other";
+    }
+}
+static int fatal_looking(DWORD c) { return c != 0xE06D7363 && strcmp(exc_name(c), "other") != 0; }
+
+static void url_enc(const char *s, char *out, int max) {
+    int n = 0;
+    for (; *s && n < max - 4; s++) {
+        unsigned char ch = (unsigned char)*s;
+        if ((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '-' || ch == '_' || ch == '.')
+            out[n++] = (char)ch;
+        else n += sprintf(out + n, "%%%02X", ch);
+    }
+    out[n] = 0;
+}
+static void html_esc(const char *s, char *out, int max) {
+    int n = 0;
+    for (; *s && n < max - 7; s++) {
+        if (*s == '&') n += sprintf(out + n, "&amp;");
+        else if (*s == '<') n += sprintf(out + n, "&lt;");
+        else if (*s == '>') n += sprintf(out + n, "&gt;");
+        else if (*s == '"') n += sprintf(out + n, "&quot;");
+        else out[n++] = *s;
+    }
+    out[n] = 0;
+}
+static void put(HANDLE f, const char *s) { DWORD w; WriteFile(f, s, (DWORD)strlen(s), &w, NULL); }
+static HANDLE create_in_dir(const wchar_t *name, wchar_t *path) {
+    lstrcpyW(path, g_dir); lstrcatW(path, name);
+    return CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+static void crash_report(EXCEPTION_POINTERS *ep) {
+    EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    DWORD code = er->ExceptionCode;
+    char at[192]; where(er->ExceptionAddress, at, sizeof at);
+    char detail[96] = "";
+    if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) && er->NumberParameters >= 2)
+        snprintf(detail, sizeof detail, ", %s address 0x%llX",
+                 er->ExceptionInformation[0] == 1 ? "writing" : er->ExceptionInformation[0] == 8 ? "executing" : "reading",
+                 (unsigned long long)er->ExceptionInformation[1]);
+    logf("!!!! CRASH: exception 0x%08lX (%s%s) at %s", (unsigned long)code, exc_name(code), detail, at);
+    if (code == EXCEPTION_STACK_OVERFLOW) return;        // almost no stack left: the log line is all we can do
+    summary("CRASH");
+
+    long long rva = g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
+    const char *verdict =
+        !g_buildOk ? "W3CrashFix does not support this build of the game, so it cannot tell which crash this is."
+        : rva != RVA_CRASH ? "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x280AD3D). Something else crashed the game."
+        : g_fixActive ? "This is the descriptor heap crash that W3CrashFix is made for, although the fix was active. That should not happen: please report it."
+        : "This is the descriptor heap crash that W3CrashFix is made for. The fix was not active in this session.";
+    const char *test = "";
+#ifdef W3_CRASHTEST
+    if (g_testCrash) test = "Note: this crash was triggered on purpose with a test key of this TEST BUILD.\r\n";
+#endif
+    snprintf(g_crSum, sizeof g_crSum,
+             "W3CrashFix crash report\r\n"
+             "Mod: %s (%s)\r\n"
+             "Fix active: %s\r\n"
+             "Crash: exception 0x%08lX (%s%s) at %s\r\n"
+             "Session length: %lu min\r\n"
+             "Graphics card: %s\r\n"
+             "Descriptor heaps: %lld live + %lld sampler (peak %lld + %lld), %lld failed creations\r\n"
+             "Fix: %lld pages rescued, %lld retired normally\r\n"
+             "Verdict: %s\r\n%s",
+             "W3CrashFix " W3CF_VERSION, g_flavor, g_fixActive ? "yes" : "no",
+             (unsigned long)code, exc_name(code), detail, at,
+             (unsigned long)((GetTickCount() - g_t0) / 60000), g_adapterName,
+             g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
+             (long long)g_rescued, (long long)g_retiredNormal, verdict, test);
+
+    // W3CrashFix.crash.log = the summary + this session's whole log. Only a newer crash overwrites it.
+    wchar_t path[MAX_PATH], src[MAX_PATH];
+    HANDLE f = create_in_dir(L"W3CrashFix.crash.log", path);
+    if (f != INVALID_HANDLE_VALUE) {
+        put(f, g_crSum); put(f, "\r\n---------------- full log of the crashed session ----------------\r\n");
+        lstrcpyW(src, g_dir); lstrcatW(src, L"W3CrashFix.log");
+        HANDLE in = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+        if (in != INVALID_HANDLE_VALUE) {
+            DWORD got, w;
+            while (ReadFile(in, g_crBuf, sizeof g_crBuf, &got, NULL) && got) WriteFile(f, g_crBuf, got, &w, NULL);
+            CloseHandle(in);
+        }
+        CloseHandle(f);
+    }
+
+    // W3CrashFix-report.html
+    char title[320], dir8[3 * MAX_PATH], dirEsc[4 * MAX_PATH];
+    f = create_in_dir(L"W3CrashFix-report.html", path);
+    if (f == INVALID_HANDLE_VALUE) { logf("crash report: could not write the report page (%lu)", GetLastError()); return; }
+    put(f, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>W3CrashFix crash report</title><style>"
+           "body{font:16px/1.5 Segoe UI,Arial,sans-serif;max-width:860px;margin:32px auto;padding:0 16px;background:#16181c;color:#e8e6e3}"
+           "h1{font-size:26px;margin:0 0 4px}pre{background:#0d0e11;border:1px solid #333;border-radius:6px;padding:14px;white-space:pre-wrap;word-break:break-word}"
+           ".b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
+           ".g{background:#30363d}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}"
+           "</style></head><body><h1>The Witcher 3 crashed</h1>"
+           "<p>W3CrashFix noticed the crash and saved a report on your PC. <b>Nothing has been sent anywhere.</b> "
+           "If you would like to help, you can send the summary below with one of the two buttons.</p><pre id=\"s\">");
+    html_esc(g_crSum, g_crEsc, sizeof g_crEsc); put(f, g_crEsc);
+    put(f, "</pre><p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"https://github.com/Havoc104/W3CrashFix/issues/new?title=");
+    snprintf(title, sizeof title, "Crash report: 0x%08lX at %s", (unsigned long)code, at);
+    url_enc(title, g_crEnc, sizeof g_crEnc); put(f, g_crEnc);
+    put(f, "&amp;body=");
+    snprintf(g_crBody, sizeof g_crBody, "%s\r\nPlease attach W3CrashFix.crash.log from the game's bin\\x64_dx12 folder: drag the file into this text box.\r\n", g_crSum);
+    url_enc(g_crBody, g_crEnc, sizeof g_crEnc); put(f, g_crEnc);
+    put(f, "\">Report on GitHub</a><button class=\"b g\" onclick=\"nexus()\">Copy summary and open Nexus Mods</button></p>"
+           "<p class=\"s\">The GitHub button opens a new issue with the summary already filled in (you need a GitHub account). "
+           "The Nexus button copies the summary and opens the mod's Posts tab, where you can paste it.</p>"
+           "<p>The full log of the crashed session is saved here:<br><code>");
+    WideCharToMultiByte(CP_UTF8, 0, g_dir, -1, dir8, sizeof dir8, NULL, NULL);
+    html_esc(dir8, dirEsc, sizeof dirEsc); put(f, dirEsc);
+    put(f, "W3CrashFix.crash.log</code><br>Please add that file to your report. It stays there until the game crashes again.</p>"
+           "<p class=\"s\">Don't want this page to open after a crash? Create an empty file named <code>W3CrashFix.noreport</code> "
+           "in that folder. The crash log is still saved.</p>"
+           "<script>function nexus(){var t=document.getElementById('s').innerText,a=document.createElement('textarea');"
+           "a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a);"
+           "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).catch(function(){})}"
+           "window.open('https://www.nexusmods.com/witcher3/mods/15624?tab=posts','_blank')}</script></body></html>");
+    CloseHandle(f);
+
+    wchar_t off[MAX_PATH]; lstrcpyW(off, g_dir); lstrcatW(off, L"W3CrashFix.noreport");
+    if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) { logf("crash report: saved; the page was not opened because W3CrashFix.noreport exists"); return; }
+    wchar_t cmd[MAX_PATH + 32]; wsprintfW(cmd, L"explorer.exe \"%s\"", path);
+    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        logf("crash report: saved and opened W3CrashFix-report.html");
+    } else logf("crash report: saved, but the page could not be opened (%lu)", GetLastError());
+}
+
+// Top-level filter: runs when nothing else handled the exception, i.e. the game is really crashing.
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    if (InterlockedExchange(&g_crashed, 1) == 0) crash_report(ep);
+    return g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;   // let the game's own crash reporter run too
+}
+// First notice of a serious-looking exception, before anyone had a chance to handle it. Only logs a line (at most
+// five per session): if the game's crash reporter ends the process itself, this line is what remains.
+static LONG CALLBACK crash_notice(EXCEPTION_POINTERS *ep) {
+    DWORD c = ep->ExceptionRecord->ExceptionCode;
+    if (fatal_looking(c) && c != EXCEPTION_STACK_OVERFLOW && InterlockedIncrement(&g_noticed) <= 5) {
+        char at[192]; where(ep->ExceptionRecord->ExceptionAddress, at, sizeof at);
+        logf("exception: 0x%08lX (%s) at %s - first notice, the game may still handle it", (unsigned long)c, exc_name(c), at);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+// The game installs its own top-level filter at some point; make sure ours stays first and theirs is still called.
+static void guard_filter(int quiet) {
+    LPTOP_LEVEL_EXCEPTION_FILTER p = SetUnhandledExceptionFilter(crash_filter);
+    if (p != crash_filter) {
+        g_prevFilter = p;
+        if (!quiet) logf("crash handler: installed again in front of another handler (%p)", (void *)p);
+    }
+}
+
+#ifdef W3_CRASHTEST
+// TEST BUILDS ONLY - never part of a release. Two key combinations crash the game on purpose, while the game window
+// is in front:  Ctrl+Alt+Shift+F7 = plain crash inside the mod,  Ctrl+Alt+Shift+F8 = the real descriptor heap crash.
+static DWORD WINAPI crash_keys(LPVOID unused) {
+    (void)unused;
+    for (;;) {
+        Sleep(50);
+        HWND fg = GetForegroundWindow(); DWORD pid = 0;
+        if (fg) GetWindowThreadProcessId(fg, &pid);
+        if (pid != GetCurrentProcessId()) continue;
+        if (!(GetAsyncKeyState(VK_CONTROL) & 0x8000) || !(GetAsyncKeyState(VK_MENU) & 0x8000) || !(GetAsyncKeyState(VK_SHIFT) & 0x8000)) continue;
+        if (GetAsyncKeyState(VK_F7) & 0x8000) {
+            logf("TEST: Ctrl+Alt+Shift+F7 - plain crash inside the mod");
+            g_testCrash = 3;
+            *(volatile int *)0 = 1;
+        }
+        if ((GetAsyncKeyState(VK_F8) & 0x8000) && InterlockedCompareExchange(&g_testCrash, 1, 0) == 0)
+            logf("TEST: Ctrl+Alt+Shift+F8 - real descriptor heap crash requested%s", g_fixActive ? "" : " (fix not active: nothing will happen)");
+    }
+    return 0;
+}
+#endif
 
 // ---------------------------------------------------------------- init thread
 typedef HRESULT (WINAPI *D3D12CreateDevice_t)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
@@ -407,6 +638,7 @@ static DWORD WINAPI init(LPVOID unused) {
         DXGI_ADAPTER_DESC1 ad; IDXGIAdapter1_GetDesc1(best, &ad);
         char name[128]; WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof name, NULL, NULL);
         logf("adapter: %s (%llu MB)", name, (unsigned long long)(ad.DedicatedVideoMemory >> 20));
+        snprintf(g_adapterName, sizeof g_adapterName, "%s (%llu MB)", name, (unsigned long long)(ad.DedicatedVideoMemory >> 20));
     }
 
     ID3D12Device *dev = NULL;
@@ -425,14 +657,13 @@ static DWORD WINAPI init(LPVOID unused) {
     }
     logf("hooks installed: %s (device vtbl %p)", ok ? "yes" : "PARTIAL", (void *)dev->lpVtbl);
     // keep our device reference: it is the game's device and must outlive our hooks anyway
+    guard_filter(0);
 
-    for (;;) { Sleep(30000); summary("30s"); }
+    for (;;) { Sleep(30000); summary("30s"); guard_filter(0); }
     return 0;
 }
 
 // Exported by the .asi build (see w3crashfix_asi.def) so that only this one symbol is public.
-// <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.3.0-5.0.16"
 const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for witcher3.exe 5.0.16.41566 (DX12)"; }
 
 static HANDLE open_log(const wchar_t *path) {
@@ -448,6 +679,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         wchar_t p[MAX_PATH], prev[MAX_PATH];
         GetModuleFileNameW(h, p, MAX_PATH);
         wchar_t *s = wcsrchr(p, L'\\'); if (s) s[1] = 0;
+        lstrcpyW(g_dir, p);
         lstrcpyW(prev, p);
         lstrcatW(p, L"W3CrashFix.log");
         lstrcatW(prev, L"W3CrashFix.previous.log");
@@ -471,7 +703,15 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         MoveFileExW(p, prev, MOVEFILE_REPLACE_EXISTING);
         g_log = open_log(p);
         logf("==== W3CrashFix %s (%s) loaded, pid %lu ====", W3CF_VERSION, flavor, GetCurrentProcessId());
+        g_flavor = flavor;
         install_fix();   // before any game code runs: no thread can be inside the patched function
+        guard_filter(1);
+        AddVectoredExceptionHandler(1, crash_notice);
+#ifdef W3_CRASHTEST
+        logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = plain crash, Ctrl+Alt+Shift+F8 = descriptor heap crash");
+        HANDLE k = CreateThread(NULL, 0, crash_keys, NULL, 0, NULL);
+        if (k) CloseHandle(k);
+#endif
         HANDLE t = CreateThread(NULL, 0, init, NULL, 0, NULL);
         if (t) CloseHandle(t);
     }
