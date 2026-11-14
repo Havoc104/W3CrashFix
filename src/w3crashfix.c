@@ -229,7 +229,11 @@ static const struct { unsigned rva; const char *name, *hex; } g_sig[] = {
 };
 static unsigned char *g_base;
 static wchar_t g_dir[MAX_PATH];                      // folder of the mod, with trailing backslash
-static int g_buildOk, g_fixActive;                   // game code recognised / detour installed
+static int g_buildOk, g_fixInstalled;                // game code recognised / detour installed
+static volatile LONG g_fixActive;                    // detour installed AND the license accepted: pages are rescued
+// The license dialog (see "license dialog" below) is compiled in with -DW3_LICENSE, which build.ps1 always passes.
+// Built without it, g_accepted is always 1 and the mod starts working right away.
+static volatile LONG g_accepted = 1;                 // the user accepted the license (now or in an earlier session)
 #ifdef W3_CRASHTEST
 static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash
 #endif
@@ -261,7 +265,13 @@ static void fixed_ensure(unsigned char *a, int n) {
     if (F32(a, A_USED) + n <= F32(a, A_CAP)) return;
     void *old = FPTR(a, A_CUR);
     if (old) {
+#ifdef W3_LICENSE
+        // Until the license is accepted (g_fixActive == 0) this function does exactly what the game's own code
+        // does: every full page goes to the retired list.
+        if (g_fixActive && F32(old, P_PENDING) == 0 && F32(old, P_FRAMEUSES) == 0) {
+#else
         if (F32(old, P_PENDING) == 0 && F32(old, P_FRAMEUSES) == 0) {
+#endif
             vec_push(a + A_FREE, old);           // idle: reusable right away
             InterlockedIncrement64(&g_rescued);
         } else {
@@ -399,8 +409,11 @@ static void install_fix(void) {
         memcpy(g_base + RVA_ENSURE, jmp, sizeof jmp);
         VirtualProtect(g_base + RVA_ENSURE, sizeof jmp, old, &old);
         FlushInstructionCache(GetCurrentProcess(), g_base + RVA_ENSURE, sizeof jmp);
-        g_fixActive = 1;
-        logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", RVA_ENSURE);
+        g_fixInstalled = 1;
+        if (g_accepted) {
+            g_fixActive = 1;
+            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", RVA_ENSURE);
+        } else logf("fix: ready, but switched off until the license is accepted (the game behaves as without the mod)");
     } else logf("fix: VirtualProtect failed %lu - FIX DISABLED", GetLastError());
 }
 
@@ -411,7 +424,7 @@ static void install_fix(void) {
 // sent by the mod itself. An empty file named W3CrashFix.noreport next to the mod stops the page from opening.
 #define RVA_CRASH 0x280ad3d
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.4.1-5.0.16"
+#define W3CF_VERSION "1.5.0-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[128] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -664,12 +677,223 @@ static DWORD WINAPI init(LPVOID unused) {
     return 0;
 }
 
+static void start_work(void);
+
+#ifdef W3_LICENSE
+// ---------------------------------------------------------------- license dialog
+// At game start the mod shows a Windows dialog with the MIT License. Until the user accepts with OK, the mod does
+// nothing: the fix is switched off, no hooks, no crash report. OK accepts: it writes the id of the license text into
+// W3CrashFix.accepted next to the mod, and the dialog is not shown again unless the license changes (the installer
+// writes the same file when the user accepts there). OK with the "I decline" box ticked renames the mod's own file to
+// W3CrashFix.removed, so that it no longer loads; nothing is deleted and no other program is started.
+// The dialog is only shown on a game build the mod supports: on any other build the fix is off anyway.
+#include "w3cf_license.h"
+#define ID_ACCEPT  101
+#define ID_DECLINE 102
+#define ID_INTRO   104
+#define ID_LICENSE 105
+#define ID_NOTE    106
+#define ID_SOURCE  107
+static HINSTANCE g_hmod;
+static wchar_t g_self[MAX_PATH];                     // full path of the mod's own file
+static const char g_licTitle[] = "W3CrashFix " W3CF_VERSION " - license";
+static const char g_licIntro[] =
+    "W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use it at your own risk.\r\n\r\n"
+    "It fixes a bug in the game's code in memory while the game runs. It changes no game files, and the mod itself "
+    "sends nothing over the internet.\r\n\r\n"
+    "Please read the license below, then click \"OK (Apply this mod)\". To decline, tick the box at the bottom first: "
+    "W3CrashFix is then switched off and removed from this game.";
+static const char g_licText[] = W3CF_LICENSE_TEXT;
+static DWORD g_licOpened;                            // when the dialog appeared (GetTickCount)
+
+// The acceptance is remembered per license text: W3CrashFix.accepted holds the id of the license it was given for
+// (W3CF_LICENSE_ID). With another id, or an empty or unreadable file, the dialog is shown again.
+static int accepted_this_license(void) {
+    wchar_t path[MAX_PATH]; lstrcpyW(path, g_dir); lstrcatW(path, L"W3CrashFix.accepted");
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    char buf[64]; DWORD n = 0;
+    if (!ReadFile(f, buf, sizeof buf - 1, &n, NULL)) n = 0;
+    CloseHandle(f);
+    while (n && (buf[n - 1] == '\r' || buf[n - 1] == '\n' || buf[n - 1] == ' ')) n--;
+    buf[n] = 0;
+    return !strcmp(buf, W3CF_LICENSE_ID);
+}
+
+static WORD *dlg_item(WORD *p, DWORD style, short x, short y, short cx, short cy, WORD id, WORD cls, const wchar_t *text) {
+    p = (WORD *)(((ULONG_PTR)p + 3) & ~(ULONG_PTR)3);              // every item starts on a 4-byte boundary
+    DLGITEMTEMPLATE *it = (DLGITEMTEMPLATE *)p;
+    it->style = style | WS_CHILD | WS_VISIBLE; it->dwExtendedStyle = 0;
+    it->x = x; it->y = y; it->cx = cx; it->cy = cy; it->id = id;
+    p = (WORD *)(it + 1);
+    *p++ = 0xFFFF; *p++ = cls;                                     // predefined class: 0x80 button, 0x81 edit, 0x82 static
+    while (*text) *p++ = *text++;
+    *p++ = 0;
+    *p++ = 0;                                                      // no creation data
+    return p;
+}
+
+static INT_PTR CALLBACK lic_proc(HWND d, UINT m, WPARAM w, LPARAM l) {
+    (void)l;
+    switch (m) {
+    case WM_INITDIALOG:
+        SetWindowTextA(d, g_licTitle);
+        SetDlgItemTextA(d, ID_INTRO, g_licIntro);
+        SetDlgItemTextA(d, ID_LICENSE, g_licText);
+        SetForegroundWindow(d);
+        SetFocus(GetDlgItem(d, ID_LICENSE));   // not on a button: a key pressed to skip the game's intro must not choose
+        SendDlgItemMessageW(d, ID_LICENSE, EM_SETSEL, 0, 0);       // the focus would otherwise select the whole text
+        g_licOpened = GetTickCount();
+        return FALSE;
+    case WM_CLOSE:                             // Alt+F4: ignored. The dialog has no X; it only closes with the OK button
+        return TRUE;
+    case WM_COMMAND:
+        switch (LOWORD(w)) {                   // IDCANCEL (Esc) is ignored on purpose
+        case IDOK:                             // Enter: the same as the OK button, for players without a mouse - but
+            if (GetTickCount() - g_licOpened < 3000) return TRUE;   // not in the first 3 seconds (intro-skipping keys)
+            /* fall through */
+        case ID_ACCEPT:                        // the OK button: accepts, unless the decline box is ticked
+            EndDialog(d, IsDlgButtonChecked(d, ID_DECLINE) == BST_CHECKED ? 3 : 1);
+            return TRUE;
+        case ID_SOURCE: {                      // "View source code": the project page, in the user's own browser
+            wchar_t line[] = L"explorer.exe \"" W3CF_SOURCE_URL_W L"\"";   // the same way the crash report page is opened
+            STARTUPINFOW si; PROCESS_INFORMATION pi; memset(&si, 0, sizeof si); si.cb = sizeof si;
+            if (CreateProcessW(NULL, line, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+            return TRUE;
+        }
+        case ID_DECLINE:                       // the decline box: the button says what OK will now do
+            SetDlgItemTextA(d, ID_ACCEPT, IsDlgButtonChecked(d, ID_DECLINE) == BST_CHECKED ? "OK (Remove this mod)" : "OK (Apply this mod)");
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+static int license_dialog(void) {
+    static DWORD buf[256];                                         // DWORD array: correctly aligned for the template
+    memset(buf, 0, sizeof buf);
+    DLGTEMPLATE *t = (DLGTEMPLATE *)buf;
+    t->style = DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION;   // no WS_SYSMENU: no X in the title bar
+    t->dwExtendedStyle = WS_EX_TOPMOST;                            // stays visible on top of the game's window
+    t->cdit = 6; t->cx = 300; t->cy = 254;
+    WORD *p = (WORD *)(t + 1);
+    *p++ = 0; *p++ = 0; *p++ = 0;                                  // no menu, default dialog class, title set later
+    *p++ = 9;                                                      // font: 9 pt Segoe UI
+    for (const wchar_t *f = L"Segoe UI"; *f; f++) *p++ = *f;
+    *p++ = 0;
+    p = dlg_item(p, SS_LEFT, 7, 7, 286, 64, ID_INTRO, 0x82, L"");
+    p = dlg_item(p, ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 7, 74, 286, 118, ID_LICENSE, 0x81, L"");
+    p = dlg_item(p, BS_AUTOCHECKBOX | WS_TABSTOP, 7, 198, 220, 12, ID_DECLINE, 0x80, L"I decline. Remove W3CrashFix from this game.");
+    p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, 218, 100, 15, ID_SOURCE, 0x80, L"View source code");
+    p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 193, 218, 100, 15, ID_ACCEPT, 0x80, L"OK (Apply this mod)");   // text changes with the decline box
+    p = dlg_item(p, SS_RIGHT, 7, 238, 286, 10, ID_NOTE, 0x82, L"This window will not appear again unless the license changes.");
+    INT_PTR r = DialogBoxIndirectParamW(g_hmod, t, NULL, lic_proc, 0);
+    if (r < 0) logf("license: the dialog could not be shown (error %lu)", GetLastError());
+    return (int)r;
+}
+
+// While the dialog is open the game must not continue behind it. A dialog can't be shown safely while Windows is still
+// loading the mod, so the game is held a little later, at a safe point: when it asks Windows to create its window.
+// The game's import of CreateWindowExA is pointed at h_CreateWindowExA, which waits until the user has chosen.
+typedef HWND (WINAPI *CWEA_t)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID);
+static HANDLE g_licDone;                             // set once the user has chosen (or the dialog is gone)
+static void **g_cwSlot;
+static CWEA_t g_cwOrig;
+static volatile LONG g_held;
+static HWND WINAPI h_CreateWindowExA(DWORD ex, LPCSTR cls, LPCSTR title, DWORD style, int x, int y, int w, int h,
+                                     HWND parent, HMENU menu, HINSTANCE inst, LPVOID param) {
+    if (WaitForSingleObject(g_licDone, 0) == WAIT_TIMEOUT) {
+        if (InterlockedExchange(&g_held, 1) == 0) logf("license: the game wants to create its window - held until the user has chosen");
+        WaitForSingleObject(g_licDone, INFINITE);
+        logf("license: the game continues");
+    }
+    return g_cwOrig(ex, cls, title, style, x, y, w, h, parent, menu, inst, param);
+}
+static void set_slot(void **slot, void *value) {
+    DWORD old;
+    if (VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &old)) { *slot = value; VirtualProtect(slot, sizeof *slot, old, &old); }
+}
+static void hold_game(void) {
+    unsigned char *b = (unsigned char *)GetModuleHandleW(NULL);
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(b + ((IMAGE_DOS_HEADER *)b)->e_lfanew);
+    DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    HMODULE user = GetModuleHandleW(L"user32.dll");
+    g_cwOrig = user ? (CWEA_t)GetProcAddress(user, "CreateWindowExA") : NULL;
+    g_licDone = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (rva && g_cwOrig && g_licDone)
+        for (IMAGE_IMPORT_DESCRIPTOR *im = (IMAGE_IMPORT_DESCRIPTOR *)(b + rva); im->Name && !g_cwSlot; im++) {
+            if (lstrcmpiA((const char *)b + im->Name, "USER32.dll") || !im->OriginalFirstThunk) continue;
+            IMAGE_THUNK_DATA64 *nm = (IMAGE_THUNK_DATA64 *)(b + im->OriginalFirstThunk), *sl = (IMAGE_THUNK_DATA64 *)(b + im->FirstThunk);
+            for (; nm->u1.AddressOfData; nm++, sl++)
+                if (!(nm->u1.Ordinal & IMAGE_ORDINAL_FLAG64) &&
+                    !strcmp((const char *)((IMAGE_IMPORT_BY_NAME *)(b + nm->u1.AddressOfData))->Name, "CreateWindowExA")) {
+                    g_cwSlot = (void **)&sl->u1.Function;
+                    set_slot(g_cwSlot, (void *)h_CreateWindowExA);
+                    break;
+                }
+        }
+    logf(g_cwSlot ? "license: the game will wait with its window until the user has chosen"
+                  : "license: the game's window function was not found - the game starts behind the dialog");
+}
+static void release_game(void) {
+    if (g_cwSlot) set_slot(g_cwSlot, (void *)g_cwOrig);            // back to Windows' own function
+    if (g_licDone) SetEvent(g_licDone);
+}
+
+static DWORD WINAPI license_thread(LPVOID unused) {
+    (void)unused;
+    logf("license: asking the user to accept the MIT License");
+    int r = license_dialog();
+    if (r == 1) {
+        wchar_t path[MAX_PATH];
+        HANDLE f = create_in_dir(L"W3CrashFix.accepted", path);
+        if (f != INVALID_HANDLE_VALUE) { put(f, W3CF_LICENSE_ID); CloseHandle(f); logf("license: accepted (W3CrashFix.accepted written; the dialog will not be shown again unless the license changes)"); }
+        else logf("license: accepted, but W3CrashFix.accepted could not be written (error %lu) - the dialog will return", GetLastError());
+        g_accepted = 1;
+        if (g_fixInstalled) {
+            g_fixActive = 1;
+            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", RVA_ENSURE);
+        }
+        start_work();
+    } else if (r == 3) {
+        wchar_t to[MAX_PATH]; lstrcpyW(to, g_dir); lstrcatW(to, L"W3CrashFix.removed");
+        char msg[900], self8[MAX_PATH * 3], to8[MAX_PATH * 3];
+        WideCharToMultiByte(CP_ACP, 0, g_self, -1, self8, sizeof self8, NULL, NULL);
+        WideCharToMultiByte(CP_ACP, 0, to, -1, to8, sizeof to8, NULL, NULL);
+        if (MoveFileExW(g_self, to, MOVEFILE_REPLACE_EXISTING)) {   // Windows allows a rename of a loaded file, but no delete and no Recycle Bin
+            logf("license: declined - the mod's file was renamed to W3CrashFix.removed and will not load again");
+            snprintf(msg, sizeof msg, "W3CrashFix is switched off and will not load again.\n\nIts file was renamed to:\n%s\n\nYou can delete that file.", to8);
+        } else {
+            logf("license: declined - the mod's file could not be renamed (error %lu); the fix stays off for this session", GetLastError());
+            snprintf(msg, sizeof msg, "W3CrashFix is switched off for this session, but its file could not be renamed.\n\nTo remove the mod, close the game and delete:\n%s", self8);
+        }
+        MessageBoxA(NULL, msg, g_licTitle, MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+    } else logf("license: the dialog ended without a choice - the fix stays off for this session");   // only if it could not be shown
+    release_game();
+    return 0;
+}
+#endif
+
 // Exported by the .asi build (see w3crashfix_asi.def) so that only this one symbol is public.
 const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for witcher3.exe 5.0.16.41566 (DX12)"; }
 
 static HANDLE open_log(const wchar_t *path) {
     return CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+// Everything the mod does besides the fix itself: crash report, heap statistics. Runs only after the license is accepted.
+static void start_work(void) {
+    guard_filter(1);
+    AddVectoredExceptionHandler(1, crash_notice);
+#ifdef W3_CRASHTEST
+    logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = plain crash, Ctrl+Alt+Shift+F8 = descriptor heap crash");
+    HANDLE k = CreateThread(NULL, 0, crash_keys, NULL, 0, NULL);
+    if (k) CloseHandle(k);
+#endif
+    HANDLE t = CreateThread(NULL, 0, init, NULL, 0, NULL);
+    if (t) CloseHandle(t);
 }
 
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
@@ -679,6 +903,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         g_t0 = GetTickCount();
         wchar_t p[MAX_PATH], prev[MAX_PATH];
         GetModuleFileNameW(h, p, MAX_PATH);
+#ifdef W3_LICENSE
+        g_hmod = h;
+        lstrcpyW(g_self, p);
+#endif
         wchar_t *s = wcsrchr(p, L'\\'); if (s) s[1] = 0;
         lstrcpyW(g_dir, p);
         lstrcpyW(prev, p);
@@ -705,16 +933,34 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         g_log = open_log(p);
         logf("==== W3CrashFix %s (%s) loaded, pid %lu ====", W3CF_VERSION, flavor, GetCurrentProcessId());
         g_flavor = flavor;
-        install_fix();   // before any game code runs: no thread can be inside the patched function
-        guard_filter(1);
-        AddVectoredExceptionHandler(1, crash_notice);
-#ifdef W3_CRASHTEST
-        logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = plain crash, Ctrl+Alt+Shift+F8 = descriptor heap crash");
-        HANDLE k = CreateThread(NULL, 0, crash_keys, NULL, 0, NULL);
-        if (k) CloseHandle(k);
+#ifdef W3_LICENSE
+        // The license: accepted for this version in an earlier session (W3CrashFix.accepted), or asked in a dialog.
+        // The dialog is only for the game itself; in any other program the mod never patches anything anyway.
+        wchar_t exe[MAX_PATH];
+        GetModuleFileNameW(NULL, exe, MAX_PATH);
+        int ask = wcsstr(exe, L"witcher3.exe") && !accepted_this_license();
+        g_accepted = !ask;
+        // The detour goes in now, before any game code runs: no thread can be inside the patched function. While
+        // the license is not accepted it behaves exactly like the game's own code (see fixed_ensure).
+        install_fix();
+#ifdef W3_LICENSE_TEST
+        // Build tests only (never in a release, see build.ps1): the stand-in "game" of the tests is not a supported
+        // build, and the dialog must still be testable.
+        logf("license dialog test variant: the dialog is also shown on an unsupported build");
+#else
+        // On a game build the mod doesn't support, the fix is off anyway: there is nothing to accept, so no dialog.
+        if (ask && !g_buildOk) { ask = 0; g_accepted = 1; }
 #endif
-        HANDLE t = CreateThread(NULL, 0, init, NULL, 0, NULL);
-        if (t) CloseHandle(t);
+        if (!ask) start_work();
+        else {
+            hold_game();
+            HANDLE t = CreateThread(NULL, 0, license_thread, NULL, 0, NULL);   // runs once DllMain has returned
+            if (t) CloseHandle(t); else release_game();
+        }
+#else
+        install_fix();   // before any game code runs: no thread can be inside the patched function
+        start_work();
+#endif
     }
     return TRUE;
 }

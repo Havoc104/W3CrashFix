@@ -21,17 +21,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+#include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"1.4.1-5.0.16"
+#define W3CF_VERSION   L"1.5.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
 #define KOFI_URL       L"https://ko-fi.com/havoc104/tip"
+#define STEAM_RUN_URL  L"steam://rungameid/292030"            // the game's Steam app id
 #define IDR_STANDALONE 101
 #define IDR_ASI        102
 
-enum { ID_PATH = 10, ID_BROWSE, ID_STATUS, ID_INSTALL, ID_UNINSTALL, ID_CLOSE, ID_STANDALONE, ID_ASI, ID_GETUAL, ID_KOFI };
-static HWND g_wnd, g_path, g_status, g_install, g_uninstall, g_rStandalone, g_rAsi, g_getUal;
+enum { ID_PATH = 10, ID_BROWSE, ID_STATUS, ID_INSTALL, ID_UNINSTALL, ID_CLOSE, ID_STANDALONE, ID_ASI, ID_GETUAL, ID_KOFI, ID_RUN };
+static HWND g_wnd, g_path, g_status, g_install, g_uninstall, g_rStandalone, g_rAsi, g_getUal, g_run;
 static HFONT g_font, g_bold;
 static int g_dpi = 96, g_userPicked;   // g_userPicked: user chose a version, stop auto-selecting
 
@@ -217,18 +219,52 @@ static DWORD remove_ours(const wchar_t *root, const wchar_t *name) {
     if (!exists(p) || !ours(p)) return 0;   // never delete someone else's file
     return DeleteFileW(p) ? 0 : GetLastError();
 }
+// What the mod's license dialog can leave behind in bin\x64_dx12:
+//   W3CrashFix.removed  - the mod's own file, renamed when the user declined the license (Windows doesn't let the mod
+//                         delete itself while the game has it loaded)
+//   W3CrashFix.accepted - a small text file with the version the license was accepted for
+// The license is accepted either here, on Install, or in the mod's own dialog at game start. Both store the id of the
+// license text (W3CF_LICENSE_ID) in W3CrashFix.accepted; with that file in place the game starts without the dialog.
+static int license_accepted(const wchar_t *root) {
+    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p);
+    HANDLE f = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    char buf[64]; DWORD n = 0;
+    if (!ReadFile(f, buf, sizeof buf - 1, &n, NULL)) n = 0;
+    CloseHandle(f);
+    while (n && (buf[n - 1] == '\r' || buf[n - 1] == '\n' || buf[n - 1] == ' ')) n--;
+    buf[n] = 0;
+    return !strcmp(buf, W3CF_LICENSE_ID);
+}
+static DWORD write_accepted(const wchar_t *root) {
+    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p);
+    HANDLE f = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return GetLastError();
+    DWORD w = 0; BOOL ok = WriteFile(f, W3CF_LICENSE_ID, (DWORD)strlen(W3CF_LICENSE_ID), &w, NULL);
+    DWORD e = ok ? 0 : GetLastError();
+    CloseHandle(f);
+    return e;
+}
+static int removed_left(const wchar_t *root) { wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.removed", p); return exists(p) && ours(p); }
+static int accepted_left(const wchar_t *root) { wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p); return exists(p); }
 static DWORD install_standalone(const wchar_t *root) {
     if (dinput_state(root) == 2) return ERROR_ALREADY_EXISTS;   // someone else's dinput8.dll: don't overwrite
     DWORD e = write_resource(IDR_STANDALONE, root, L"dinput8.dll");
+    if (!e) remove_ours(root, L"W3CrashFix.removed");           // a declined copy from before: tidy up, not essential
     return e ? e : remove_ours(root, L"W3CrashFix.asi");        // one version at a time
 }
 static DWORD install_asi(const wchar_t *root) {
     DWORD e = write_resource(IDR_ASI, root, L"W3CrashFix.asi");
+    if (!e) remove_ours(root, L"W3CrashFix.removed");
     return e ? e : remove_ours(root, L"dinput8.dll");           // our dinput8.dll would block the loader's name
 }
+// Uninstall leaves a clean folder: the mod's file and what the license dialog left behind. The logs stay.
 static DWORD uninstall_all(const wchar_t *root) {
     DWORD a = remove_ours(root, L"dinput8.dll"), b = remove_ours(root, L"W3CrashFix.asi");
-    return a ? a : b;
+    DWORD c = remove_ours(root, L"W3CrashFix.removed"), d = 0;
+    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p);
+    if (exists(p) && !DeleteFileW(p)) d = GetLastError();
+    return a ? a : b ? b : c ? c : d;
 }
 
 // ---------------------------------------------------------------- UI
@@ -245,7 +281,7 @@ static int current_root(wchar_t *root) {
 
 static void refresh(void) {
     wchar_t root[MAX_PATH], ver[64], loader[64] = L"", s[1400];
-    int canInstall = 0, canUninstall = 0, showUal = 0;
+    int canInstall = 0, canUninstall = 0, canRun = 0, showUal = 0;
     if (!current_root(root)) {
         swprintf(s, 1400, L"%ls was not found in this folder.\r\nClick Browse and select the game folder "
                           L"(the one that contains the \"bin\" folder).", GAME_NAME);
@@ -255,7 +291,11 @@ static void refresh(void) {
         int vok = game_version(root, ver, 64), di = dinput_state(root), asi = asi_installed(root);
         int hasLoader = find_asi_loader(root, loader);
         if (!g_userPicked) set_choice(hasLoader || asi);   // sensible default
-        canUninstall = di == 1 || asi;
+        // "Run game" when an installed version can actually work: the standalone version always, the ASI plugin only
+        // with an ASI loader (without one the game would start without the fix). The selected option plays no part.
+        canRun = di == 1 || (asi && hasLoader);
+        int left = removed_left(root) || accepted_left(root);  // leftovers of the license dialog
+        canUninstall = di == 1 || asi || left;
 
         wchar_t a[300], b[300], c[600];
         if (vok) swprintf(a, 300, L"Game version: %ls (supported).", ver);
@@ -263,6 +303,7 @@ static void refresh(void) {
                               L"inactive. Check for a newer W3CrashFix release.", ver, GAME_VER);
         if (di == 1) swprintf(b, 300, L"Installed now: W3CrashFix standalone (dinput8.dll).");
         else if (asi) swprintf(b, 300, L"Installed now: W3CrashFix ASI plugin (W3CrashFix.asi).");
+        else if (left) swprintf(b, 300, L"Installed now: nothing. Files left over from an earlier removal can be cleaned up with Uninstall.");
         else swprintf(b, 300, L"Installed now: nothing.");
 
         if (!want_asi()) {
@@ -286,6 +327,7 @@ static void refresh(void) {
     SetWindowTextW(g_status, s);
     EnableWindow(g_install, canInstall);
     EnableWindow(g_uninstall, canUninstall);
+    EnableWindow(g_run, canRun);
     ShowWindow(g_getUal, showUal ? SW_SHOW : SW_HIDE);
 }
 
@@ -300,7 +342,20 @@ static void action(int install) {
                          L"The fix checks the game code and stays inactive (harmless) on other versions.\nInstall anyway?", ver, GAME_VER);
         if (MessageBoxW(g_wnd, q, L"W3CrashFix " W3CF_VERSION, MB_YESNO | MB_ICONWARNING) != IDYES) return;
     }
+    // Installing means accepting the license. It is shown here unless it was accepted for this folder before; the
+    // acceptance is stored after a successful install, so the game then starts without the mod's own license dialog.
+    int accepted = 0;
+    if (install && !license_accepted(root)) {
+        static wchar_t lic[3000], text[4000];
+        MultiByteToWideChar(CP_UTF8, 0, W3CF_LICENSE_TEXT, -1, lic, 3000);
+        swprintf(text, 4000, L"W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use it "
+                             L"at your own risk.\n\nClick OK to accept the license below and install W3CrashFix, or Cancel "
+                             L"to stop. Nothing is installed if you cancel.\n\n%ls", lic);
+        if (MessageBoxW(g_wnd, text, L"W3CrashFix " W3CF_VERSION L" - license", MB_OKCANCEL | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDOK) return;
+        accepted = 1;
+    }
     DWORD e = !install ? uninstall_all(root) : asi ? install_asi(root) : install_standalone(root);
+    if (!e && accepted) write_accepted(root);   // if this fails, the game simply asks once more
     if (e == ERROR_ACCESS_DENIED) {
         msg(L"Windows doesn't allow this program to write to the game folder.\n\n"
             L"Close the installer, right-click W3CrashFix-Installer.exe, choose \"Run as administrator\" and try again.",
@@ -321,6 +376,27 @@ static void action(int install) {
             L"my cat gets a treat and some extra pets! \U0001F638", MB_ICONINFORMATION);
     } else msg(L"W3CrashFix has been removed.", MB_ICONINFORMATION);
     refresh();
+}
+
+// "Run game": start the game the way its store does. A Steam copy is started through Steam (so that Steam knows the
+// game is running); any other copy through the game's own launcher, or the DirectX 12 executable if there is none.
+static int contains_i(const wchar_t *s, const wchar_t *part) {
+    size_t n = wcslen(part);
+    for (; *s; s++) if (!_wcsnicmp(s, part, n)) return 1;
+    return 0;
+}
+static void run_game(void) {
+    wchar_t root[MAX_PATH], exe[MAX_PATH], dir[MAX_PATH];
+    if (!current_root(root)) return;
+    if (game_running(root)) { msg(L"The game is already running.", MB_ICONINFORMATION); return; }
+    HINSTANCE r;
+    if (contains_i(root, L"\\steamapps\\common\\")) r = ShellExecuteW(g_wnd, L"open", STEAM_RUN_URL, NULL, NULL, SW_SHOWNORMAL);
+    else {
+        swprintf(exe, MAX_PATH, L"%ls\\REDprelauncher.exe", root); lstrcpyW(dir, root);
+        if (!exists(exe)) { bin_file(root, L"witcher3.exe", exe); swprintf(dir, MAX_PATH, L"%ls\\bin\\x64_dx12", root); }
+        r = ShellExecuteW(g_wnd, L"open", exe, NULL, dir, SW_SHOWNORMAL);
+    }
+    if ((INT_PTR)r <= 32) msg(L"The game could not be started from here. Please start it the way you normally do.", MB_ICONWARNING);
 }
 
 static void browse(void) {
@@ -357,6 +433,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_status = ctl(L"STATIC", L"", 0, 16, 160, 528, 112, ID_STATUS);
         g_getUal = ctl(L"BUTTON", L"Get Ultimate ASI Loader...", BS_PUSHBUTTON | WS_TABSTOP, 16, 278, 190, 28, ID_GETUAL);
         ctl(L"BUTTON", L"Buy me a coffee", BS_PUSHBUTTON | WS_TABSTOP, 16, 322, 150, 28, ID_KOFI);
+        g_run = ctl(L"BUTTON", L"Run game", BS_PUSHBUTTON | WS_TABSTOP, 172, 322, 86, 28, ID_RUN);
         g_install = ctl(L"BUTTON", L"Install", BS_DEFPUSHBUTTON | WS_TABSTOP, 264, 322, 88, 28, ID_INSTALL);
         g_uninstall = ctl(L"BUTTON", L"Uninstall", BS_PUSHBUTTON | WS_TABSTOP, 360, 322, 88, 28, ID_UNINSTALL);
         ctl(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, 456, 322, 88, 28, ID_CLOSE);
@@ -372,6 +449,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case ID_STANDALONE: case ID_ASI: if (HIWORD(w) == BN_CLICKED) { g_userPicked = 1; refresh(); } return 0;
         case ID_GETUAL: ShellExecuteW(h, L"open", UAL_URL, NULL, NULL, SW_SHOWNORMAL); return 0;
         case ID_KOFI: ShellExecuteW(h, L"open", KOFI_URL, NULL, NULL, SW_SHOWNORMAL); return 0;
+        case ID_RUN: run_game(); return 0;
         case ID_INSTALL: action(1); return 0;
         case ID_UNINSTALL: action(0); return 0;
         case ID_CLOSE: case IDCANCEL: DestroyWindow(h); return 0;

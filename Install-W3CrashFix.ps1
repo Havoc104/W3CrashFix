@@ -24,7 +24,10 @@ function Find-Source($name) {
 
 if ($Uninstall) {
     $removed = 0
-    foreach ($f in $dll, $asiFile) { if (Test-Ours $f) { Remove-Item $f; "Removed $(Split-Path $f -Leaf)"; $removed++ } }
+    # also what the license dialog can leave behind: the mod's file renamed after a decline, and the acceptance note
+    foreach ($f in $dll, $asiFile, (Join-Path $bin 'W3CrashFix.removed')) { if (Test-Ours $f) { Remove-Item $f; "Removed $(Split-Path $f -Leaf)"; $removed++ } }
+    $acc = Join-Path $bin 'W3CrashFix.accepted'
+    if (Test-Path $acc) { Remove-Item $acc; 'Removed W3CrashFix.accepted'; $removed++ }
     if (-not $removed) { 'Not installed.' }
     return
 }
