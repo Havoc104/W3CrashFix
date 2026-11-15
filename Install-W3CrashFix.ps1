@@ -1,6 +1,6 @@
 # Installs / removes W3CrashFix in the DX12 bin folder of The Witcher 3: Wild Hunt Remastered. Pick one form:
 #   .\Install-W3CrashFix.ps1              -> dinput8.dll   (standalone, no other mods needed)
-#   .\Install-W3CrashFix.ps1 -Asi         -> W3CrashFix.asi (needs an ASI loader, e.g. Ultimate ASI Loader)
+#   .\Install-W3CrashFix.ps1 -Asi         -> W3CrashFix.asi (needs Ultimate ASI Loader; other ASI loaders are untested and not supported)
 #   .\Install-W3CrashFix.ps1 -Uninstall   -> removes whichever of ours is installed
 # -GamePath <folder> if the game is not in the default Steam library.
 # Files are taken from build\ (developer build) or from the script's own folder (release zip).
@@ -35,11 +35,11 @@ if ($Uninstall) {
 if ($Asi) {
     Copy-Item (Find-Source 'W3CrashFix.asi') $asiFile -Force
     "Installed W3CrashFix.asi in $bin"
-    if (Test-Ours $dll) { Remove-Item $dll; 'Removed our dinput8.dll so an ASI loader can use that name.' }
-    elseif (-not (Test-Path $dll)) { 'NOTE: no dinput8.dll ASI loader found. Make sure an ASI loader (e.g. Ultimate ASI Loader) is installed in this folder.' }
+    if (Test-Ours $dll) { Remove-Item $dll; 'Removed our dinput8.dll so Ultimate ASI Loader can use that name.' }
+    elseif (-not (Test-Path $dll)) { 'NOTE: no dinput8.dll found. The ASI version needs Ultimate ASI Loader (x64) in this folder.' }
 } else {
     if ((Test-Path $dll) -and -not (Test-Ours $dll)) {
-        throw "A different dinput8.dll (probably an ASI loader) is already in $bin - use -Asi instead."
+        throw "A different dinput8.dll is already in $bin. If it is Ultimate ASI Loader, use -Asi instead."
     }
     Copy-Item (Find-Source 'dinput8.dll') $dll -Force
     "Installed dinput8.dll in $bin"

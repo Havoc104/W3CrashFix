@@ -140,7 +140,7 @@ if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value
     try { if (Test-Path dist) { Remove-Item dist -Recurse -Force -ErrorAction Stop } }
     catch { throw "Can't clear dist\ - is a zip open in 7-Zip or Explorer? ($($_.Exception.Message))" }
-    $gitAuthor = 'Onno Struijk (Havoc104)'      # as written in the repository
+    $gitAuthor = 'Onno Mattheus Struijk (Havoc104)'      # as written in the repository
     $utf8 = New-Object Text.UTF8Encoding $false
 
     function Zip($stage, $zip) { Compress-Archive -Path "$stage\*" -DestinationPath $zip; Remove-Item $stage -Recurse -Force }
@@ -187,7 +187,7 @@ if ($Package) {
     Compress-Archive -Path $src -DestinationPath "dist\github\W3CrashFix-$ver-source.zip"
     Remove-Item dist\github\stage -Recurse -Force
 
-    Pack nexus 'Onno Struijk (104Havoc)'
+    Pack nexus 'Onno Mattheus Struijk (104Havoc)'
 
     Get-ChildItem dist -Recurse -File | Select-Object @{n = 'File'; e = { $_.FullName.Substring($PWD.Path.Length + 1) } }, Length
 }

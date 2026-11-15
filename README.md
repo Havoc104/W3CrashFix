@@ -42,29 +42,29 @@ Installing by hand is always recommended: it's one file, and you can see exactly
 
 It works alongside your other ASI mods.
 
-1. Install an ASI loader in `<game folder>\bin\x64_dx12\`: [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest) (x64), saved as `dinput8.dll`. Skip this if you already have one.
+1. Install [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest) (x64) in `<game folder>\bin\x64_dx12\`, saved as `dinput8.dll`. Skip this if you already have it. W3CrashFix is made for and tested with Ultimate ASI Loader only. You are free to try another ASI loader, but that is untested and not supported.
 2. Copy `bin\x64_dx12\W3CrashFix.asi` from the zip into the same folder.
 
 ### B. Standalone (`dinput8.dll`)
 
-Use this if you don't want an ASI loader. It can't be used if another mod already uses `dinput8.dll`.
+Use this if you don't want to install Ultimate ASI Loader. It can't be used if another mod already uses `dinput8.dll`.
 
 1. Copy `bin\x64_dx12\dinput8.dll` from the zip into `<game folder>\bin\x64_dx12\`.
 
 If you accidentally install both versions, only the one that loads first patches the game. The other one does nothing.
 
-### Optional: the installer
+### Optional: the installer/uninstaller
 
-The installer only exists for ease of use; manual installation is still recommended.
+A small program that installs either version for you and can remove it again. The installer only exists for ease of use; manual installation is still recommended.
 
 1. Download `W3CrashFix-<version>-Installer.exe` from the [latest release](https://github.com/Havoc104/W3CrashFix/releases/latest) on GitHub and run it. The installer is not offered on Nexus Mods.
 2. It looks for the game in Steam, GOG and Epic. If it doesn't find it, click **Browse** and select the game folder.
 3. Choose a version and click **Install**. The installer shows the license first; see [The license window](#the-license-window). You can use **Uninstall** later to remove the mod.
-4. **Run game** starts the game once W3CrashFix is installed and able to work (the standalone version, or the ASI version together with an ASI loader). A Steam copy is started through Steam.
+4. **Run game** starts the game once W3CrashFix is installed. A Steam copy is started through Steam. If the ASI version is installed without Ultimate ASI Loader, the installer first reminds you that other ASI loaders are untested and not supported.
 
 **Uninstall** leaves a clean folder: besides the mod's own file it removes `W3CrashFix.accepted` (the note that you accepted the license) and `W3CrashFix.removed` (left after declining). The logs stay.
 
-The installer checks your game version and won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that an ASI loader is installed. If none is found, it links you to Ultimate ASI Loader, which is a separate project and isn't included.
+The installer checks your game version and won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that Ultimate ASI Loader is installed. If it isn't found, it links you to it. Ultimate ASI Loader is a separate project and isn't included. Without it the installer warns you and asks before it installs the ASI version, so you can still try another ASI loader at your own risk.
 
 **Windows will show a warning** ("Windows protected your PC") when you start the installer. That's normal: the installer isn't code-signed, because a signing certificate costs money. It is safe to run. It only copies the W3CrashFix file into your game folder, and its full source code is in this repository (`src\installer.c`). Click **More info**, then **Run anyway**.
 
@@ -216,7 +216,7 @@ W3CrashFix is free. If it saved your playthrough and you'd like to say thanks, y
 
 MIT. See [LICENSE](LICENSE).
 
-**Authors:** Onno Struijk (Havoc104) and Claude.
+**Authors:** Onno Mattheus Struijk (Havoc104) and Claude.
 
 - Nexus Mods: [104Havoc](https://www.nexusmods.com/profile/104Havoc)
 - GitHub: [Havoc104](https://github.com/Havoc104)

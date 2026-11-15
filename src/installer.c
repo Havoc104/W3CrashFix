@@ -1,9 +1,9 @@
 // W3CrashFix installer for The Witcher 3: Wild Hunt Remastered (DX12).
 // Installs / removes either version of W3CrashFix; both are embedded as resources:
 //   standalone  -> bin\x64_dx12\dinput8.dll
-//   ASI plugin  -> bin\x64_dx12\W3CrashFix.asi (needs an ASI loader; the installer only checks for one and
-//                  links to Ultimate ASI Loader - the loader is a third-party project and is not included)
-// Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License, see LICENSE.
+//   ASI plugin  -> bin\x64_dx12\W3CrashFix.asi (needs Ultimate ASI Loader, the only loader W3CrashFix supports; the
+//                  installer only checks for it and links to it - it is a third-party project and is not included)
+// Copyright (c) 2026 Onno Mattheus Struijk (Havoc104). MIT License, see LICENSE.
 //
 // Command line (for scripts and tests):
 //   W3CrashFix-Installer.exe --install-standalone | --install-asi | --uninstall  "<game folder>"
@@ -291,9 +291,9 @@ static void refresh(void) {
         int vok = game_version(root, ver, 64), di = dinput_state(root), asi = asi_installed(root);
         int hasLoader = find_asi_loader(root, loader);
         if (!g_userPicked) set_choice(hasLoader || asi);   // sensible default
-        // "Run game" when an installed version can actually work: the standalone version always, the ASI plugin only
-        // with an ASI loader (without one the game would start without the fix). The selected option plays no part.
-        canRun = di == 1 || (asi && hasLoader);
+        // "Run game" once one of the two versions is installed; the selected option plays no part. For the ASI plugin
+        // without Ultimate ASI Loader (the user may be trying another loader) run_game() shows a reminder first.
+        canRun = di == 1 || asi;
         int left = removed_left(root) || accepted_left(root);  // leftovers of the license dialog
         canUninstall = di == 1 || asi || left;
 
@@ -308,19 +308,27 @@ static void refresh(void) {
 
         if (!want_asi()) {
             if (di == 2 && hasLoader)
-                swprintf(c, 600, L"An ASI loader (Ultimate ASI Loader) is installed as dinput8.dll, so the standalone "
+                swprintf(c, 600, L"Ultimate ASI Loader is installed as dinput8.dll, so the standalone "
                                  L"version can't be used. Choose the ASI plugin instead.");
             else if (di == 2)
-                swprintf(c, 600, L"Another mod's dinput8.dll is in bin\\x64_dx12, so the standalone version can't be "
-                                 L"installed (it would overwrite that file). Choose the ASI plugin instead.");
+                swprintf(c, 600, L"Another program's dinput8.dll is in bin\\x64_dx12, so the standalone version can't be "
+                                 L"installed (it would overwrite that file).");
             else { swprintf(c, 600, L"Will install: bin\\x64_dx12\\dinput8.dll."); canInstall = 1; }
         } else if (hasLoader) {
-            swprintf(c, 600, L"ASI loader found (Ultimate ASI Loader as %ls).\r\nWill install: bin\\x64_dx12\\W3CrashFix.asi.", loader);
+            swprintf(c, 600, L"Ultimate ASI Loader found (as %ls).\r\nWill install: bin\\x64_dx12\\W3CrashFix.asi.", loader);
             canInstall = 1;
+        } else if (di == 2) {
+            // A dinput8.dll that is neither ours nor Ultimate ASI Loader. W3CrashFix is made for and tested with
+            // Ultimate ASI Loader only; the user may still try another loader (Install asks first, see action()).
+            swprintf(c, 600, L"Ultimate ASI Loader not found. The dinput8.dll in bin\\x64_dx12 is a different program. "
+                             L"W3CrashFix is made for Ultimate ASI Loader (x64): replace that file with its dinput8.dll, "
+                             L"then come back here. You can try another ASI loader, but that is untested and not supported.");
+            showUal = 1; canInstall = 1;
         } else {
-            swprintf(c, 600, L"No ASI loader found. The ASI plugin needs one: download Ultimate ASI Loader (x64), "
-                             L"put its dinput8.dll in bin\\x64_dx12, then come back here. Or choose the standalone version.");
-            showUal = 1;
+            swprintf(c, 600, L"Ultimate ASI Loader not found. The ASI plugin needs it: download Ultimate ASI Loader (x64), "
+                             L"put its dinput8.dll in bin\\x64_dx12, then come back here. Or choose the standalone version. "
+                             L"You can try another ASI loader, but that is untested and not supported.");
+            showUal = 1; canInstall = 1;
         }
         swprintf(s, 1400, L"%ls\r\n%ls\r\n\r\n%ls", a, b, c);
     }
@@ -329,6 +337,67 @@ static void refresh(void) {
     EnableWindow(g_uninstall, canUninstall);
     EnableWindow(g_run, canRun);
     ShowWindow(g_getUal, showUal ? SW_SHOW : SW_HIDE);
+}
+
+// The license, in a window of fixed size with a scrolling text box, so that it fits on small screens however long the
+// license text is. Returns 1 if the user accepted.
+enum { IDL_INTRO = 100, IDL_TEXT };
+static WORD *lic_item(WORD *p, DWORD style, short x, short y, short cx, short cy, WORD id, WORD cls, const wchar_t *text) {
+    p = (WORD *)(((ULONG_PTR)p + 3) & ~(ULONG_PTR)3);              // every item starts on a 4-byte boundary
+    DLGITEMTEMPLATE *it = (DLGITEMTEMPLATE *)p;
+    it->style = style | WS_CHILD | WS_VISIBLE; it->dwExtendedStyle = 0;
+    it->x = x; it->y = y; it->cx = cx; it->cy = cy; it->id = id;
+    p = (WORD *)(it + 1);
+    *p++ = 0xFFFF; *p++ = cls;                                     // predefined class: 0x80 button, 0x81 edit, 0x82 static
+    while (*text) *p++ = *text++;
+    *p++ = 0;
+    *p++ = 0;                                                      // no creation data
+    return p;
+}
+static INT_PTR CALLBACK lic_proc(HWND d, UINT m, WPARAM w, LPARAM l) {
+    (void)l;
+    switch (m) {
+    case WM_INITDIALOG: {
+        static wchar_t lic[4000];
+        MultiByteToWideChar(CP_UTF8, 0, W3CF_LICENSE_TEXT, -1, lic, 4000);
+        // Keep the company's and the game's name on one line each: no-break spaces inside them, so the text box
+        // never wraps there.
+        static const wchar_t *whole[] = { W3CF_COMPANY_W, W3CF_GAME_W };
+        for (int k = 0; k < 2; k++)
+            for (wchar_t *n = wcsstr(lic, whole[k]); n; n = wcsstr(n + 1, whole[k]))
+                for (size_t i = 0; i < wcslen(whole[k]); i++) if (n[i] == L' ') n[i] = 0x00A0;
+        SetWindowTextW(d, L"W3CrashFix " W3CF_VERSION L" - license");
+        SetDlgItemTextW(d, IDL_INTRO, L"W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use "
+                                      L"it at your own risk.\r\n\r\nRead the license below. \"Accept and install\" accepts it and "
+                                      L"installs W3CrashFix. Nothing is installed if you cancel.");
+        SetDlgItemTextW(d, IDL_TEXT, lic);
+        SetFocus(GetDlgItem(d, IDL_TEXT));
+        SendDlgItemMessageW(d, IDL_TEXT, EM_SETSEL, 0, 0);         // the focus would otherwise select the whole text
+        return FALSE;
+    }
+    case WM_CLOSE: EndDialog(d, 0); return TRUE;
+    case WM_COMMAND:
+        if (LOWORD(w) == IDOK || LOWORD(w) == IDCANCEL) { EndDialog(d, LOWORD(w) == IDOK); return TRUE; }
+        break;
+    }
+    return FALSE;
+}
+static int ask_license(void) {
+    static DWORD buf[256];                                         // DWORD array: correctly aligned for the template
+    memset(buf, 0, sizeof buf);
+    DLGTEMPLATE *t = (DLGTEMPLATE *)buf;
+    t->style = DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    t->cdit = 4; t->cx = 300; t->cy = 226;
+    WORD *p = (WORD *)(t + 1);
+    *p++ = 0; *p++ = 0; *p++ = 0;                                  // no menu, default dialog class, title set later
+    *p++ = 9;                                                      // font: 9 pt Segoe UI
+    for (const wchar_t *f = L"Segoe UI"; *f; f++) *p++ = *f;
+    *p++ = 0;
+    p = lic_item(p, SS_LEFT, 7, 7, 286, 40, IDL_INTRO, 0x82, L"");
+    p = lic_item(p, ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 7, 50, 286, 148, IDL_TEXT, 0x81, L"");
+    p = lic_item(p, BS_PUSHBUTTON | WS_TABSTOP, 141, 204, 96, 15, IDOK, 0x80, L"Accept and install");
+    p = lic_item(p, BS_DEFPUSHBUTTON | WS_TABSTOP, 241, 204, 52, 15, IDCANCEL, 0x80, L"Cancel");   // Enter = Cancel
+    return DialogBoxIndirectParamW(GetModuleHandleW(NULL), t, g_wnd, lic_proc, 0) == 1;
 }
 
 static void action(int install) {
@@ -342,16 +411,21 @@ static void action(int install) {
                          L"The fix checks the game code and stays inactive (harmless) on other versions.\nInstall anyway?", ver, GAME_VER);
         if (MessageBoxW(g_wnd, q, L"W3CrashFix " W3CF_VERSION, MB_YESNO | MB_ICONWARNING) != IDYES) return;
     }
+    // The ASI plugin without Ultimate ASI Loader: allowed, because the user is free to try another loader, but only
+    // after being told plainly that this is untested and that without a loader the plugin does nothing.
+    wchar_t loaderName[64];
+    if (install && asi && !find_asi_loader(root, loaderName)) {
+        if (MessageBoxW(g_wnd, L"Ultimate ASI Loader was not found in this game folder.\n\n"
+                               L"Without an ASI loader the ASI plugin does nothing. W3CrashFix is made for and tested with "
+                               L"Ultimate ASI Loader only; other ASI loaders are untested and not supported.\n\n"
+                               L"Install the ASI plugin anyway?", L"W3CrashFix " W3CF_VERSION,
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    }
     // Installing means accepting the license. It is shown here unless it was accepted for this folder before; the
     // acceptance is stored after a successful install, so the game then starts without the mod's own license dialog.
     int accepted = 0;
     if (install && !license_accepted(root)) {
-        static wchar_t lic[3000], text[4000];
-        MultiByteToWideChar(CP_UTF8, 0, W3CF_LICENSE_TEXT, -1, lic, 3000);
-        swprintf(text, 4000, L"W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use it "
-                             L"at your own risk.\n\nClick OK to accept the license below and install W3CrashFix, or Cancel "
-                             L"to stop. Nothing is installed if you cancel.\n\n%ls", lic);
-        if (MessageBoxW(g_wnd, text, L"W3CrashFix " W3CF_VERSION L" - license", MB_OKCANCEL | MB_ICONINFORMATION | MB_DEFBUTTON2) != IDOK) return;
+        if (!ask_license()) return;
         accepted = 1;
     }
     DWORD e = !install ? uninstall_all(root) : asi ? install_asi(root) : install_standalone(root);
@@ -389,6 +463,17 @@ static void run_game(void) {
     wchar_t root[MAX_PATH], exe[MAX_PATH], dir[MAX_PATH];
     if (!current_root(root)) return;
     if (game_running(root)) { msg(L"The game is already running.", MB_ICONINFORMATION); return; }
+    // Reminder: the ASI plugin is installed, but not Ultimate ASI Loader, the only loader W3CrashFix supports.
+    wchar_t loaderName[64];
+    if (dinput_state(root) != 1 && asi_installed(root) && !find_asi_loader(root, loaderName)) {
+        if (MessageBoxW(g_wnd, L"Reminder: Ultimate ASI Loader was not found in this game folder.\n\n"
+                               L"The ASI plugin only works through an ASI loader. W3CrashFix is made for and tested with "
+                               L"Ultimate ASI Loader only; other ASI loaders are untested and not supported. If the plugin "
+                               L"is not loaded, the game runs without the fix.\n\n"
+                               L"After starting the game you can check bin\\x64_dx12\\W3CrashFix.log: it should contain a "
+                               L"line with \"ACTIVE\".\n\nStart the game now?", L"W3CrashFix " W3CF_VERSION,
+                        MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) return;
+    }
     HINSTANCE r;
     if (contains_i(root, L"\\steamapps\\common\\")) r = ShellExecuteW(g_wnd, L"open", STEAM_RUN_URL, NULL, NULL, SW_SHOWNORMAL);
     else {
@@ -429,7 +514,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ctl(L"BUTTON", L"Browse...", BS_PUSHBUTTON | WS_TABSTOP, 456, 89, 88, 26, ID_BROWSE);
         ctl(L"STATIC", L"Version:", 0, 16, 128, 70, 20, 0);
         g_rStandalone = ctl(L"BUTTON", L"Standalone (dinput8.dll)", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 90, 126, 200, 22, ID_STANDALONE);
-        g_rAsi = ctl(L"BUTTON", L"ASI plugin (needs an ASI loader)", BS_AUTORADIOBUTTON, 300, 126, 244, 22, ID_ASI);
+        g_rAsi = ctl(L"BUTTON", L"ASI plugin (needs Ultimate ASI Loader)", BS_AUTORADIOBUTTON, 300, 126, 244, 22, ID_ASI);
         g_status = ctl(L"STATIC", L"", 0, 16, 160, 528, 112, ID_STATUS);
         g_getUal = ctl(L"BUTTON", L"Get Ultimate ASI Loader...", BS_PUSHBUTTON | WS_TABSTOP, 16, 278, 190, 28, ID_GETUAL);
         ctl(L"BUTTON", L"Buy me a coffee", BS_PUSHBUTTON | WS_TABSTOP, 16, 322, 150, 28, ID_KOFI);
@@ -492,7 +577,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
     RECT r = { 0, 0, S(560), S(366) };
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&r, style, FALSE);
-    HWND h = CreateWindowW(L"W3CrashFixInstaller", L"W3CrashFix " W3CF_VERSION L" installer", style,
+    HWND h = CreateWindowW(L"W3CrashFixInstaller", L"W3CrashFix " W3CF_VERSION L" installer/uninstaller", style,
                            CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);
     ShowWindow(h, show);
     MSG mv;

@@ -1,9 +1,9 @@
 // W3CrashFix - in-memory crash fix for The Witcher 3: Wild Hunt Remastered, DX12, witcher3.exe 5.0.16.41566.
-// Copyright (c) 2026 Onno Struijk (Havoc104) and Claude. MIT License, see LICENSE.
+// Copyright (c) 2026 Onno Mattheus Struijk (Havoc104). MIT License, see LICENSE.
 //
 // The fix (THE FIX below): descriptor-page leak that ends in a crash at witcher3.exe+0x280ad3d.
 // Also logs descriptor heap statistics to W3CrashFix.log next to the module.
-// Built as dinput8.dll (standalone proxy) or W3CrashFix.asi (for an ASI loader). Nothing on disk is modified;
+// Built as dinput8.dll (standalone proxy) or W3CrashFix.asi (for Ultimate ASI Loader). Nothing on disk is modified;
 // every patch first verifies the exact game code it was written for and disables itself on any mismatch.
 
 #define WIN32_LEAN_AND_MEAN
@@ -739,7 +739,16 @@ static INT_PTR CALLBACK lic_proc(HWND d, UINT m, WPARAM w, LPARAM l) {
     case WM_INITDIALOG:
         SetWindowTextA(d, g_licTitle);
         SetDlgItemTextA(d, ID_INTRO, g_licIntro);
-        SetDlgItemTextA(d, ID_LICENSE, g_licText);
+        {   // Keep the company's and the game's name on one line each: no-break spaces inside them, so the text
+            // box never wraps there.
+            static wchar_t lic[4000];
+            static const wchar_t *whole[] = { W3CF_COMPANY_W, W3CF_GAME_W };
+            MultiByteToWideChar(CP_UTF8, 0, g_licText, -1, lic, 4000);
+            for (int k = 0; k < 2; k++)
+                for (wchar_t *n = wcsstr(lic, whole[k]); n; n = wcsstr(n + 1, whole[k]))
+                    for (size_t i = 0; i < wcslen(whole[k]); i++) if (n[i] == L' ') n[i] = 0x00A0;
+            SetDlgItemTextW(d, ID_LICENSE, lic);
+        }
         SetForegroundWindow(d);
         SetFocus(GetDlgItem(d, ID_LICENSE));   // not on a button: a key pressed to skip the game's intro must not choose
         SendDlgItemMessageW(d, ID_LICENSE, EM_SETSEL, 0, 0);       // the focus would otherwise select the whole text
