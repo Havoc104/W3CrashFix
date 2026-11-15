@@ -1,5 +1,5 @@
 // W3CrashFix - the license as it is shown to the user, shared by the mod (w3crashfix.c) and the installer (installer.c).
-// Copyright (c) 2026 Onno Mattheus Struijk (Havoc104). MIT License, see LICENSE.
+// Copyright (c) 2026 Onno Struijk (Havoc104). MIT License, see LICENSE.
 //
 // W3CF_LICENSE_ID names this license text. An acceptance is stored with this id (in W3CrashFix.accepted, next to the
 // mod), so the user is asked again only when the license itself changes - not at every update of the mod.
@@ -11,7 +11,7 @@
 #define W3CF_SOURCE_URL_W L"https://github.com/Havoc104/W3CrashFix"
 #define W3CF_LICENSE_TEXT \
     "MIT License\r\n\r\n" \
-    "Copyright (c) 2026 Onno Mattheus Struijk (Havoc104)\r\n\r\n" \
+    "Copyright (c) 2026 Onno Struijk (Havoc104)\r\n\r\n" \
     "Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated " \
     "documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation " \
     "the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and " \
