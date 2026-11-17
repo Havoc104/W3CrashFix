@@ -16,9 +16,9 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 ## Requirements
 
-- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.log` in an issue helps to add support.
+- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.activity.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.5.0-5.0.16` is mod version 1.5.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.6.0-5.0.16` is mod version 1.6.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -33,6 +33,12 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 - Other mods: RT Shadow Fixes.
 
 Other ways of installing DLSS 5 (for example DLSS Manager) are untested.
+
+### Other mods
+
+W3CrashFix changes no game files and no scripts, so it should work alongside other mods. That can't be promised for every mod: only what is listed under "Tested with" has actually been played with.
+
+**A crash report names your in-game mods.** In-game mods are the ones the game itself loads: the folders in the game's `Mods` folder, and add-ons in its `DLC` folder. The mod notes their folder names at the start of its log, and a crash report lists them, so that whoever reads the report can rule them in or out. Nothing is switched off because of a mod. DLL and ASI mods (ReShade, RenoDX, DLSS add-ons, other ASI plugins) are not listed.
 
 ## Installation
 
@@ -62,31 +68,46 @@ A small program that installs either version for you and can remove it again. Th
 3. Choose a version and click **Install**. The installer shows the license first; see [The license window](#the-license-window). You can use **Uninstall** later to remove the mod.
 4. **Run game** starts the game once W3CrashFix is installed. A Steam copy is started through Steam. If the ASI version is installed without Ultimate ASI Loader, the installer first reminds you that other ASI loaders are untested and not supported.
 
-**Uninstall** leaves a clean folder: besides the mod's own file it removes `W3CrashFix.accepted` (the note that you accepted the license) and `W3CrashFix.removed` (left after declining). The logs stay.
+**Uninstall** leaves a clean folder: besides the mod's own file it removes `W3CrashFix.ini` (the mod's settings: your license acceptance and the report id) and `W3CrashFix.removed` (left after declining), as well as the crash log with its folder and the report page, if a crash left them. The activity logs stay.
 
 The installer checks your game version and won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that Ultimate ASI Loader is installed. If it isn't found, it links you to it. Ultimate ASI Loader is a separate project and isn't included. Without it the installer warns you and asks before it installs the ASI version, so you can still try another ASI loader at your own risk.
 
 **Windows will show a warning** ("Windows protected your PC") when you start the installer. That's normal: the installer isn't code-signed, because a signing certificate costs money. It is safe to run. It only copies the W3CrashFix file into your game folder, and its full source code is in this repository (`src\installer.c`). Click **More info**, then **Run anyway**.
 
-**Compatibility.** It works alongside ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods. These were all in use during testing.
+ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use during testing. See also [Other mods](#other-mods).
 
 ### Check that it works
 
-Start the game, accept the license if the window appears (see below), and load a save. Then open `<game folder>\bin\x64_dx12\W3CrashFix.log`. It should contain:
+Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 1.5.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.6.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
 
-Every 30 seconds the mod adds a status line to the log, including live descriptor-heap counts. The previous session's log is kept as `W3CrashFix.previous.log`.
+Every 30 seconds the mod adds a status line to the log, including live descriptor-heap counts. The previous session's log is kept as `W3CrashFix.activity.previous.log`.
+
+### Settings
+
+The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini`, which you can open with Notepad:
+
+```ini
+[W3CrashFix]
+LicenseAccepted=MIT-2
+ReportId=0123456789ABCDEF
+OpenReportPage=1
+```
+
+- `LicenseAccepted`: the license text you accepted. See [The license window](#the-license-window).
+- `ReportId`: a random number, used only in crash reports. See [If the game crashes](#if-the-game-crashes).
+- `OpenReportPage`: set it to `0` if nothing should open after a crash. The crash log is still saved.
 
 ### The license window
 
 The first time you start the game with W3CrashFix, a small window appears before the game does. It shows the MIT License, under which the mod is published, and says in plain words that the mod comes without any warranty.
 
-- **OK (Apply this mod)** accepts the license and switches the fix on. The window does not appear again unless the license itself changes.
+- **OK (Apply this mod)** accepts the license and switches the fix on. The window does not appear again unless the license itself changes; when it does, the window says so.
 - To decline, tick **I decline. Remove W3CrashFix from this game.** The button then reads **OK (Remove this mod)**. The fix stays off, and the mod renames its own file to `W3CrashFix.removed`, so that it never loads again.
 - **View source code** opens this repository in your browser.
 
@@ -104,21 +125,29 @@ On a game version the mod does not support, the window does not appear: the fix 
 
 ### If the game crashes
 
-Since 1.4.1 the mod notices a crash and helps you report it:
+The mod notices a crash and helps you report it:
 
-- It writes what crashed (file and offset) into the log.
-- It saves the crashed session as `W3CrashFix.crash.log`, with a short summary on top: mod version, whether the fix was active, the crash address, heap counts, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file.
-- It opens a small page from your own PC, `W3CrashFix-report.html`, with that summary and two buttons: **Report on GitHub** opens a new issue with the summary filled in, and **Copy summary and open Nexus Mods** copies it and opens the mod's Posts tab.
+- It writes what crashed (file and offset) into its activity log.
+- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: mod version, a random report id, the in-game mods that were enabled, whether the fix was active, the crash address and the processor's registers, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file.
+- It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log**.
+
+**Sending a report.** The button opens an upload page of the author's online storage (pCloud). Drag the crash log from the small folder window onto that page, type any name you like (a made-up one is fine), and click Upload. You don't need an account. If the browser covers the folder window, click it on the taskbar.
+
+**The report page is a file on your own PC, not a website, and the mod itself never connects to the internet.** Only your browser does, and only when you click the button. Nothing leaves your PC unless you upload the file yourself. The reason the report is shown in your browser is explained at the bottom of that page.
+
+**What a report contains.** The crash log holds the summary and the mod's activity log of the crashed session: technical data. It can include the folder the game is installed in and the folder names of your in-game mods (see [Other mods](#other-mods)). Only the author can see uploaded files. A report sent this way can't be answered; for questions, use the Posts tab on Nexus Mods or the issues here on GitHub.
+
+**The report id** is a random number made on your PC the first time the mod works. Its only use is that several reports from the same installation can be recognised as such. It is not derived from your hardware, Windows or your name, and it says nothing about you. It is kept as `ReportId` in `W3CrashFix.ini`; remove that line to get a new one.
+
+**Crashes with another cause are welcome too.** The crash log is made for every crash, not only for the one W3CrashFix fixes. Such reports might be analysed in an attempt to provide a fix. That is not a promise.
 
 The game's own crash reporter may also appear after a crash. That one reports to the game's developers; the W3CrashFix page is only about this mod. You can use both.
 
-**The mod itself sends nothing.** Nothing leaves your PC unless you click one of the buttons and submit the report yourself. The summary contains no file paths or user names.
-
-If you don't want the page to open after a crash, create an empty file named `W3CrashFix.noreport` next to the mod in `bin\x64_dx12`. The crash log is still saved.
+If you don't want anything to open after a crash, set `OpenReportPage=0` in `W3CrashFix.ini` (see [Settings](#settings)). The crash log is still saved.
 
 ### Uninstall
 
-Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`. You can also delete `W3CrashFix.accepted` and, if it exists, `W3CrashFix.removed`.
+Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`. You can also delete `W3CrashFix.ini` and, if they exist, `W3CrashFix.removed`, `W3CrashFix-report.html` and the folder `W3CrashFix crash report`.
 
 ## Technical details
 
@@ -137,15 +166,26 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 
 ## Changelog
 
+### 1.6.0-5.0.16
+
+- Crash report, sending: the report page now has one button, **Send the crash log**. It opens an upload page of the author's online storage, where you drop the crash log; no account is needed and only the author sees the file. It replaces the two buttons for GitHub and Nexus Mods. The mod itself still never connects to the internet. See [If the game crashes](#if-the-game-crashes).
+- Crash report, easier to use: the crash log now has a folder of its own, `W3CrashFix crash report`, and after a crash a small folder window opens on it, so the file is ready to drag.
+- Crash report, more useful: the summary now also shows the processor's registers, the memory situation, whether the game build is supported, the in-game mods that were enabled, and a random report id that lets several reports from one installation be recognised.
+- Settings: one readable file, `W3CrashFix.ini`, replaces the small files `W3CrashFix.accepted` and `W3CrashFix.noreport`. Existing ones are taken over automatically. See [Settings](#settings).
+- The mod's log is now called `W3CrashFix.activity.log`, so it can't be mixed up with the crash log. Logs under the old name are tidied up at the first start.
+- License: the copyright line now names one copyright holder, and the license has a new section, "Additional permission", which lets CD PROJEKT RED S.A. use the fix without the usual notices. See [LICENSE](LICENSE). Because the license text changed, the license window appears once more after updating, and says why.
+- Installer: it now has an icon, is called installer/uninstaller, shows the license in a window that scrolls, names Ultimate ASI Loader as the one supported loader, and on Uninstall also removes the settings file and what a crash report left.
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** No. If an earlier version works for you, you can keep it: the fix itself is the same.
+
+Updating does help the project, though. If you ever run into a crash, the newest version is the one built to analyse it: it records more about what crashed and makes sending the report a matter of one drag. A report from the newest version is the most useful one I can get.
+
 ### 1.5.0-5.0.16
 
 - New: a license window at the first game start. It shows the MIT License and asks you to accept it before the fix is switched on; declining removes the mod from the game. See [The license window](#the-license-window).
 - Installer: the license is shown on Install, a new **Run game** button, and Uninstall now also removes the files the license window leaves behind.
 - The descriptor page fix is unchanged.
-
-**Do I need to update?** No. If an earlier version works for you, you can keep it: the fix itself is the same. This release is for new users, and for anyone who wants to explore the project.
-
-Updating does help the project, though. If you ever run into a problem, the newest version is the one built to analyse it: it records what crashed, saves a crash log with a summary and a verdict, and helps you report it. A report from the newest version is the most useful one I can get.
 
 ### 1.4.1-5.0.16
 
@@ -189,8 +229,9 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 - `src\w3crashfix.c`: the mod.
 - `src\w3cf_license.h`: the license text as shown to the user, shared by the mod and the installer.
 - `src\test_harness.c`: loads the DLL outside the game and exercises the D3D12 hooks.
-- `src\test_diag.c`: test for the unsupported-build diagnostic, the caller names in the log, the crash report and the license window. `build.ps1` builds and runs it.
+- `src\test_diag.c`: test for the unsupported-build diagnostic, the caller names in the log, the crash report, the settings file and the license window. `build.ps1` builds and runs it.
 - `src\installer.c`, `src\installer.rc`, `src\installer.manifest`: the installer. Both mod files are embedded in it.
+- `src\installer-icon.svg`, `src\installer.ico`: the installer's icon, the cat from the project's banner.
 
 ## FAQ
 

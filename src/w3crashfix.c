@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Onno Struijk (Havoc104). MIT License, see LICENSE.
 //
 // The fix (THE FIX below): descriptor-page leak that ends in a crash at witcher3.exe+0x280ad3d.
-// Also logs descriptor heap statistics to W3CrashFix.log next to the module.
+// Also logs descriptor heap statistics to W3CrashFix.activity.log next to the module.
 // Built as dinput8.dll (standalone proxy) or W3CrashFix.asi (for Ultimate ASI Loader). Nothing on disk is modified;
 // every patch first verifies the exact game code it was written for and disables itself on any mismatch.
 
@@ -421,15 +421,15 @@ static void install_fix(void) {
 // When the game crashes, the mod writes what crashed into the log, saves the session as W3CrashFix.crash.log with a
 // short summary on top, and writes W3CrashFix-report.html next to it and opens that page. The page shows the summary
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
-// sent by the mod itself. An empty file named W3CrashFix.noreport next to the mod stops the page from opening.
+// sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 #define RVA_CRASH 0x280ad3d
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.5.0-5.0.16"
+#define W3CF_VERSION "1.6.0-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[128] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
 static volatile LONG g_crashed, g_noticed;
-static char g_crSum[2048], g_crBody[2400], g_crEnc[8192], g_crEsc[4096], g_crBuf[65536];
+static char g_crSum[3072], g_crEsc[6144], g_crBuf[65536];
 
 static const char *exc_name(DWORD c) {
     switch (c) {
@@ -448,16 +448,6 @@ static const char *exc_name(DWORD c) {
 }
 static int fatal_looking(DWORD c) { return c != 0xE06D7363 && strcmp(exc_name(c), "other") != 0; }
 
-static void url_enc(const char *s, char *out, int max) {
-    int n = 0;
-    for (; *s && n < max - 4; s++) {
-        unsigned char ch = (unsigned char)*s;
-        if ((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '-' || ch == '_' || ch == '.')
-            out[n++] = (char)ch;
-        else n += sprintf(out + n, "%%%02X", ch);
-    }
-    out[n] = 0;
-}
 static void html_esc(const char *s, char *out, int max) {
     int n = 0;
     for (; *s && n < max - 7; s++) {
@@ -475,6 +465,270 @@ static HANDLE create_in_dir(const wchar_t *name, wchar_t *path) {
     return CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 }
 
+// The processor's registers at the moment of the crash, as Windows hands them to the exception handler. A value
+// that points into the game's executable is written as w3+0x... (the same on every PC); everything else as a
+// plain number. Together with the crash address this shows, for example, which pointer was empty.
+static char g_crRegs[700];
+static void fmt_regs(const CONTEXT *c) {
+    static const char *nm[16] = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"};
+    const DWORD64 v[16] = {c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->Rbp, c->Rsp, c->R8, c->R9, c->R10, c->R11, c->R12, c->R13, c->R14, c->R15};
+    DWORD64 lo = (DWORD64)(ULONG_PTR)g_base, hi = lo;
+    if (g_base) hi = lo + ((IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew))->OptionalHeader.SizeOfImage;
+    int n = 0;
+    g_crRegs[0] = 0;
+    for (int i = 0; i < 16 && n < (int)sizeof g_crRegs - 40; i++) {
+        if (i == 8) n += snprintf(g_crRegs + n, sizeof g_crRegs - n, "\r\n           ");
+        if (v[i] >= lo && v[i] < hi) n += snprintf(g_crRegs + n, sizeof g_crRegs - n, "%s=w3+0x%llX ", nm[i], (unsigned long long)(v[i] - lo));
+        else n += snprintf(g_crRegs + n, sizeof g_crRegs - n, "%s=0x%llX ", nm[i], (unsigned long long)v[i]);
+    }
+}
+
+// ---------------------------------------------------------------- settings: W3CrashFix.ini
+// One readable file next to the mod instead of several small ones:
+//   [W3CrashFix]
+//   LicenseAccepted=MIT-2      the license text the user accepted (W3CF_LICENSE_ID); written by the mod or the installer
+//   ReportId=0123456789ABCDEF  the random report id (see below)
+//   OpenReportPage=1           0 = after a crash only the crash log is saved; no page and no folder window open
+// Files of earlier versions are taken over once and then removed, so nobody is asked again because of this change:
+// W3CrashFix.accepted (1.5.0), W3CrashFix.noreport (an empty file users could make), W3CrashFix.id (test builds).
+static wchar_t g_ini[MAX_PATH];
+static int g_openPage = 1;
+static void ini_get(const wchar_t *key, char *out, int n) {
+    wchar_t w[128]; w[0] = 0;
+    GetPrivateProfileStringW(L"W3CrashFix", key, L"", w, 128, g_ini);
+    if (!WideCharToMultiByte(CP_ACP, 0, w, -1, out, n, NULL, NULL)) out[0] = 0;
+    out[n - 1] = 0;
+}
+static int ini_set(const wchar_t *key, const char *val) {
+    wchar_t w[128];
+    MultiByteToWideChar(CP_ACP, 0, val, -1, w, 128); w[127] = 0;
+    return WritePrivateProfileStringW(L"W3CrashFix", key, w, g_ini);
+}
+// Reads a small file of an earlier version (trimmed) and removes it. Returns 1 if the file was there.
+static int take_old_file(const wchar_t *name, char *out, int n) {
+    wchar_t path[MAX_PATH]; lstrcpyW(path, g_dir); lstrcatW(path, name);
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    DWORD got = 0;
+    if (!ReadFile(f, out, (DWORD)n - 1, &got, NULL)) got = 0;
+    CloseHandle(f);
+    while (got && (out[got - 1] == '\r' || out[got - 1] == '\n' || out[got - 1] == ' ')) got--;
+    out[got] = 0;
+    DeleteFileW(path);
+    return 1;
+}
+static void load_settings(void) {
+    lstrcpyW(g_ini, g_dir); lstrcatW(g_ini, L"W3CrashFix.ini");
+    char v[64], cur[64];
+    if (take_old_file(L"W3CrashFix.accepted", v, sizeof v)) {
+        ini_get(L"LicenseAccepted", cur, sizeof cur);
+        if (v[0] && !cur[0]) ini_set(L"LicenseAccepted", v);
+        logf("settings: W3CrashFix.accepted of an earlier version was taken over into W3CrashFix.ini and removed");
+    }
+    if (take_old_file(L"W3CrashFix.id", v, sizeof v)) {
+        ini_get(L"ReportId", cur, sizeof cur);
+        if (v[0] && !cur[0]) ini_set(L"ReportId", v);
+        logf("settings: W3CrashFix.id of an earlier test build was taken over into W3CrashFix.ini and removed");
+    }
+    if (take_old_file(L"W3CrashFix.noreport", v, sizeof v)) {
+        ini_set(L"OpenReportPage", "0");
+        logf("settings: W3CrashFix.noreport was taken over into W3CrashFix.ini as OpenReportPage=0 and removed");
+    }
+    ini_get(L"OpenReportPage", v, sizeof v);
+    g_openPage = strcmp(v, "0") != 0;
+}
+
+// ---------------------------------------------------------------- in-game mods and the report id
+// Where the report page's one button leads: an upload page ("file request") of the author's pCloud storage. The
+// user's browser opens it and the user picks the file there; the mod itself sends nothing.
+#define W3CF_UPLOAD_URL "https://u.pcloud.com/#/puplink?code=AilXZFWjrIdFCRypf5hzHODSQLbE119u7"
+// The crash log's own folder, next to the mod (see crash_report).
+#define W3CF_REPORT_DIR   "W3CrashFix crash report"
+#define W3CF_REPORT_DIR_W L"W3CrashFix crash report"
+
+// In-game mods are the ones the game itself loads: folders named mod... in <game>\Mods, and add-on folders in
+// <game>\DLC that are not the game's own. DLL and ASI mods next to the exe are not looked at. The mod only names
+// them: one line in the activity log, and the line "In-game mods:" in the crash summary, so that whoever reads a
+// crash report can see which in-game mods were enabled and can rule them in or out. Nothing is switched off
+// because of a mod, and no mod is treated differently from another.
+static char g_modNames[600] = "none";
+static int g_modsFound;
+
+static int own_dlc(const char *n) {      // the game's own add-on folders, if a copy of the game keeps them there
+    if (!lstrcmpiA(n, "bob") || !lstrcmpiA(n, "ep1")) return 1;
+    if ((n[0] | 32) != 'd' || (n[1] | 32) != 'l' || (n[2] | 32) != 'c' || !n[3]) return 0;
+    for (n += 3; *n; n++) if (*n < '0' || *n > '9') return 0;
+    return 1;                            // "dlc" followed by digits only
+}
+static void scan_mod_folder(const wchar_t *root, const wchar_t *sub, const wchar_t *mask, int dlc) {
+    wchar_t pat[MAX_PATH + 32]; WIN32_FIND_DATAW fd;
+    if (lstrlenW(root) + lstrlenW(sub) + lstrlenW(mask) + 2 >= MAX_PATH) return;
+    lstrcpyW(pat, root); lstrcatW(pat, sub); lstrcatW(pat, L"\\"); lstrcatW(pat, mask);
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+        char n8[200];
+        if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, n8, sizeof n8, NULL, NULL)) lstrcpyA(n8, "(long name)");
+        if (dlc && own_dlc(n8)) continue;
+        size_t len = g_modsFound ? strlen(g_modNames) : 0;
+        if (len + strlen(n8) + 12 < sizeof g_modNames) snprintf(g_modNames + len, sizeof g_modNames - len, "%s%s", len ? ", " : "", n8);
+        else if (len + 6 < sizeof g_modNames && strcmp(g_modNames + len - 5, ", ...")) lstrcatA(g_modNames, ", ...");
+        g_modsFound++;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+// Looked at once, when the mod starts working: the game reads its mods at start as well.
+static void scan_mods(void) {
+    wchar_t root[MAX_PATH]; lstrcpyW(root, g_dir);          // <game>\bin\x64_dx12\  ->  <game>\ .
+    for (int up = 0; up < 3; up++) { wchar_t *s = wcsrchr(root, L'\\'); if (!s) return; *s = 0; }
+    lstrcatW(root, L"\\");
+    scan_mod_folder(root, L"Mods", L"mod*", 0);
+    scan_mod_folder(root, L"DLC", L"*", 1);
+    if (!g_modsFound) logf("mods: no in-game mods found");
+    else logf("mods: in-game mods found: %s (a crash report would name them)", g_modNames);
+}
+
+// The report id: a random number made on this PC the first time the mod works, kept as ReportId in W3CrashFix.ini
+// and shown in the crash summary. Its only use: several crash reports from the same installation can be recognised
+// as such. It is not derived from the hardware, Windows or the user's name; removing the line gives a new one, and
+// Uninstall and a declined license remove the whole file.
+static char g_reportId[20] = "none";
+static void load_report_id(void) {
+    char buf[64]; ini_get(L"ReportId", buf, sizeof buf);
+    int ok = strlen(buf) == 16;
+    for (int i = 0; ok && i < 16; i++) ok = (buf[i] >= '0' && buf[i] <= '9') || (buf[i] >= 'A' && buf[i] <= 'F');
+    if (ok) { memcpy(g_reportId, buf, 17); logf("report id: %s (random, from W3CrashFix.ini)", g_reportId); return; }
+    LARGE_INTEGER q; FILETIME ft; QueryPerformanceCounter(&q); GetSystemTimeAsFileTime(&ft);
+    unsigned long long x = (unsigned long long)q.QuadPart ^ (((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
+    x ^= ((unsigned long long)GetCurrentProcessId() << 32) ^ ((unsigned long long)GetCurrentThreadId() << 13) ^ (unsigned long long)(ULONG_PTR)&x;
+    for (int i = 0; i < 2; i++) {                            // mix the bits (splitmix64)
+        x += 0x9E3779B97F4A7C15ULL; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL; x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL; x ^= x >> 31;
+    }
+    snprintf(g_reportId, sizeof g_reportId, "%016llX", x);
+    if (ini_set(L"ReportId", g_reportId)) logf("report id: %s (random, newly made and saved in W3CrashFix.ini; remove the ReportId line there to get a new one)", g_reportId);
+    else logf("report id: %s (random; W3CrashFix.ini could not be written, error %lu, so the next session gets another one)", g_reportId, GetLastError());
+}
+
+// Finds the Explorer window that shows the crash log's own folder: a folder window whose title contains that
+// folder's name (the title is the folder name, the full path, or the name followed by " - File Explorer").
+//
+// RULES FOR EVERYTHING THAT TOUCHES WINDOWS AFTER A CRASH (learned the hard way: a test build once hung the
+// crashed game for good, and the PC had to be reset):
+//   1. Never ask a window of the game's own process for anything. Asking for its title means waiting for the
+//      game's window thread to answer, and after a crash that thread may never answer. other_process() below
+//      is the first check in both searches.
+//   2. Never make a call that waits for another program. Windows of other programs are only read (their class,
+//      their title, their state: none of these wait) and changed with the non-waiting calls ShowWindowAsync and
+//      SetWindowPos with SWP_ASYNCWINDOWPOS.
+//   3. All of it runs on a thread of its own, and crash_report() waits for that thread for a limited time only.
+//      Whatever happens there, the crash path ends and the game's own crash reporter gets its turn.
+static int other_process(HWND h) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    return pid && pid != GetCurrentProcessId();
+}
+// A folder window with that name may already be open (left from an earlier crash). The search therefore works
+// in two steps: before Explorer is started, "collect" notes the windows that are there; afterwards only a window
+// that was not there before is taken, because that is the one the user is looking at.
+typedef struct { HWND old[32]; int nOld; int collect; HWND found; } folder_search;
+static BOOL CALLBACK find_report_folder(HWND h, LPARAM lp) {
+    folder_search *s = (folder_search *)lp;
+    wchar_t cls[64], title[2 * MAX_PATH];
+    if (!other_process(h)) return TRUE;
+    if (!IsWindowVisible(h) || !GetClassNameW(h, cls, 64) || lstrcmpW(cls, L"CabinetWClass")) return TRUE;
+    if (!GetWindowTextW(h, title, 2 * MAX_PATH) || !wcsstr(title, W3CF_REPORT_DIR_W)) return TRUE;
+    if (s->collect) { if (s->nOld < 32) s->old[s->nOld++] = h; return TRUE; }
+    for (int i = 0; i < s->nOld; i++) if (s->old[i] == h) return TRUE;   // was there before: not the new one
+    s->found = h;
+    return FALSE;
+}
+// Finds the browser window that shows the report page: its title begins with the page's title (browsers put the
+// title of the tab in front). A folder window is never taken for it, although the folder's name is the same.
+static BOOL CALLBACK find_report_page(HWND h, LPARAM out) {
+    static const wchar_t pageTitle[] = L"W3CrashFix crash report";
+    wchar_t cls[64], title[2 * MAX_PATH];
+    if (!other_process(h)) return TRUE;
+    if (!IsWindowVisible(h) || !GetClassNameW(h, cls, 64) || !lstrcmpW(cls, L"CabinetWClass")) return TRUE;
+    if (!GetWindowTextW(h, title, 2 * MAX_PATH) || wcsncmp(title, pageTitle, sizeof pageTitle / sizeof pageTitle[0] - 1)) return TRUE;
+    *(HWND *)out = h;
+    return FALSE;
+}
+
+// Whether window a is in front of window b: walks the windows from the front, only reading (never waits).
+static int folder_in_front(HWND a, HWND b) {
+    HWND h = GetTopWindow(NULL);
+    for (int i = 0; h && i < 10000; i++, h = GetWindow(h, GW_HWNDNEXT)) {
+        if (h == a) return 1;
+        if (h == b) return 0;
+    }
+    return 0;
+}
+
+// Opens the folder window and the report page and arranges them. Runs on its own thread (rule 3 above).
+static wchar_t g_crPage[MAX_PATH];                   // full path of W3CrashFix-report.html
+static DWORD WINAPI report_windows(LPVOID unused) {
+    (void)unused;
+    DWORD t0 = GetTickCount();                           // the log lines below give times in ms from here
+    // Order matters. Windows does not let a program in the background put other programs' windows in front
+    // (tried in several ways on 17 Nov 2026; it is silently refused). What does work: the window that opens LAST
+    // comes to the front by its own program's doing. So the report page is opened first, the mod waits until the
+    // browser window is there and active, and only then is Explorer started on the crash log's folder: its new
+    // window opens in front of the browser. The mod then only makes it small and moves it to the lower right;
+    // it never changes the order of windows.
+    HWND fw = NULL, bw = NULL;
+    // 1. The report page, in the user's default browser.
+    wchar_t cmd[MAX_PATH + 32]; wsprintfW(cmd, L"explorer.exe \"%s\"", g_crPage);
+    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        // A browser that is already running puts the page in a new tab; if its window is minimized it would stay
+        // so. The mod waits up to three seconds for the window that shows the page and restores it if needed.
+        for (int i = 0; i < 30 && !bw; i++) { Sleep(100); EnumWindows(find_report_page, (LPARAM)&bw); }
+        if (bw) {
+            int wasMin = IsIconic(bw);
+            if (wasMin) ShowWindowAsync(bw, SW_RESTORE);
+            DWORD ta = GetTickCount();                   // until the browser really is the active window, at most 2 s
+            while (GetForegroundWindow() != bw && GetTickCount() - ta < 2000) Sleep(50);
+            wchar_t bcls[64] = L"?"; char bcls8[100];
+            GetClassNameW(bw, bcls, 64);
+            WideCharToMultiByte(CP_UTF8, 0, bcls, -1, bcls8, sizeof bcls8, NULL, NULL);
+            logf("crash report: saved and opened W3CrashFix-report.html (browser window found after %lu ms, window class %s; it %s; %s)",
+                 GetTickCount() - t0, bcls8, wasMin ? "was minimized and has been restored" : "was not minimized",
+                 GetForegroundWindow() == bw ? "it is the active window" : "it had not become the active window within 2 s");
+        } else logf("crash report: saved and opened W3CrashFix-report.html (its browser window was not found within 3 seconds)");
+    } else logf("crash report: saved, but the page could not be opened (%lu)", GetLastError());
+    // 2. Then the folder window on the crash log's own folder, with the file highlighted, for dragging it onto
+    //    the upload page. Made small and put in the lower right, without touching the order of windows.
+    wchar_t sel[2 * MAX_PATH + 80]; wsprintfW(sel, L"explorer.exe /select,\"%s" W3CF_REPORT_DIR_W L"\\W3CrashFix.crash.log\"", g_dir);
+    STARTUPINFOW si2 = { sizeof si2 }; PROCESS_INFORMATION pi2;
+    static folder_search fs;
+    memset(&fs, 0, sizeof fs);
+    fs.collect = 1; EnumWindows(find_report_folder, (LPARAM)&fs); fs.collect = 0;   // the ones already open
+    if (CreateProcessW(NULL, sel, NULL, NULL, FALSE, 0, NULL, NULL, &si2, &pi2)) {
+        CloseHandle(pi2.hThread); CloseHandle(pi2.hProcess);
+        for (int i = 0; i < 20 && !fs.found; i++) { Sleep(100); EnumWindows(find_report_folder, (LPARAM)&fs); }
+        fw = fs.found;
+        int reused = 0;
+        // No new window in time: Explorer may have brought an existing window on that folder forward instead.
+        for (int i = 0; !fw && i < fs.nOld; i++) if (IsWindow(fs.old[i]) && IsWindowVisible(fs.old[i])) { fw = fs.old[i]; reused = 1; }
+        MONITORINFO mi; mi.cbSize = sizeof mi;
+        if (fw && GetMonitorInfoW(MonitorFromWindow(fw, MONITOR_DEFAULTTONEAREST), &mi)) {
+            int ww = mi.rcWork.right - mi.rcWork.left, wh = mi.rcWork.bottom - mi.rcWork.top;
+            int cx = ww / 3 < 520 ? 520 : ww / 3, cy = wh / 4 < 260 ? 260 : wh / 4;
+            if (cx > ww) cx = ww;
+            if (cy > wh) cy = wh;
+            if (IsZoomed(fw) || IsIconic(fw)) ShowWindowAsync(fw, SW_RESTORE);
+            SetWindowPos(fw, NULL, mi.rcWork.right - cx - 16, mi.rcWork.bottom - cy - 16, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+            Sleep(500);                                  // let Explorer finish bringing it forward, then look
+            logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (%s found after %lu ms, %d such window(s) were open before; made small, lower right; in front of the browser: %s, checked)",
+                 reused ? "an already open window" : "new window", GetTickCount() - t0, fs.nOld,
+                 !bw ? "no browser window to compare with" : (IsWindow(fw) && folder_in_front(fw, bw) ? "YES" : "NO"));
+        } else logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (its window was not found in time, so it keeps Explorer's own size and place)");
+    } else logf("crash report: the folder window could not be opened (%lu)", GetLastError());
+    return 0;
+}
+
 static void crash_report(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     DWORD code = er->ExceptionCode;
@@ -487,6 +741,8 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     logf("!!!! CRASH: exception 0x%08lX (%s%s) at %s", (unsigned long)code, exc_name(code), detail, at);
     if (code == EXCEPTION_STACK_OVERFLOW) return;        // almost no stack left: the log line is all we can do
     summary("CRASH");
+    if (ep->ContextRecord) { fmt_regs(ep->ContextRecord); logf("[CRASH] registers: %s", g_crRegs); }
+    else lstrcpyA(g_crRegs, "not available");
 
     long long rva = g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
     const char *verdict =
@@ -498,28 +754,41 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
 #ifdef W3_CRASHTEST
     if (g_testCrash) test = "Note: this crash was triggered on purpose with a test key of this TEST BUILD.\r\n";
 #endif
+    // The summary has to be useful on its own: many reports arrive without the log file attached.
+    char mem[256]; vram(mem, sizeof mem);
     snprintf(g_crSum, sizeof g_crSum,
              "W3CrashFix crash report\r\n"
              "Mod: %s (%s)\r\n"
+             "Report id: %s\r\n"
+             "In-game mods: %s\r\n"
+             "Game build supported: %s\r\n"
              "Fix active: %s\r\n"
              "Crash: exception 0x%08lX (%s%s) at %s\r\n"
+             "Registers: %s\r\n"
              "Session length: %lu min\r\n"
              "Graphics card: %s\r\n"
              "Descriptor heaps: %lld live + %lld sampler (peak %lld + %lld), %lld failed creations\r\n"
              "Fix: %lld pages rescued, %lld retired normally\r\n"
+             "Memory: %s\r\n"
              "Verdict: %s\r\n%s",
-             "W3CrashFix " W3CF_VERSION, g_flavor, g_fixActive ? "yes" : "no",
-             (unsigned long)code, exc_name(code), detail, at,
+             "W3CrashFix " W3CF_VERSION, g_flavor, g_reportId, g_modNames, g_buildOk ? "yes" : "no", g_fixActive ? "yes" : "no",
+             (unsigned long)code, exc_name(code), detail, at, g_crRegs,
              (unsigned long)((GetTickCount() - g_t0) / 60000), g_adapterName,
              g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
-             (long long)g_rescued, (long long)g_retiredNormal, verdict, test);
+             (long long)g_rescued, (long long)g_retiredNormal, mem, verdict, test);
 
-    // W3CrashFix.crash.log = the summary + this session's whole log. Only a newer crash overwrites it.
+    // W3CrashFix.crash.log = the summary + this session's whole log. Only a newer crash overwrites it. It gets a
+    // folder of its own next to the mod, holding nothing else: the folder window that opens after a crash then
+    // shows exactly one file, so there is nothing to scroll to and nothing to mix up with the activity log.
     wchar_t path[MAX_PATH], src[MAX_PATH];
-    HANDLE f = create_in_dir(L"W3CrashFix.crash.log", path);
+    lstrcpyW(path, g_dir); lstrcatW(path, W3CF_REPORT_DIR_W);
+    CreateDirectoryW(path, NULL);                                   // fine if it is there already
+    lstrcpyW(src, g_dir); lstrcatW(src, L"W3CrashFix.crash.log");
+    DeleteFileW(src);                                               // a crash log of an earlier version, in the old place
+    HANDLE f = create_in_dir(W3CF_REPORT_DIR_W L"\\W3CrashFix.crash.log", path);
     if (f != INVALID_HANDLE_VALUE) {
         put(f, g_crSum); put(f, "\r\n---------------- full log of the crashed session ----------------\r\n");
-        lstrcpyW(src, g_dir); lstrcatW(src, L"W3CrashFix.log");
+        lstrcpyW(src, g_dir); lstrcatW(src, L"W3CrashFix.activity.log");
         HANDLE in = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
         if (in != INVALID_HANDLE_VALUE) {
             DWORD got, w;
@@ -530,50 +799,78 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     }
 
     // W3CrashFix-report.html
-    char title[320], dir8[3 * MAX_PATH], dirEsc[4 * MAX_PATH];
+    // One button: it opens the author's upload page in the user's browser, where the user picks the crash log.
+    // Together with the page the mod opens a folder window on the crash log's own folder (see below), so the user
+    // can drag the file onto the upload page; a page in a browser is not allowed to open Explorer itself.
+    char dir8[3 * MAX_PATH], dirEsc[4 * MAX_PATH];
     f = create_in_dir(L"W3CrashFix-report.html", path);
     if (f == INVALID_HANDLE_VALUE) { logf("crash report: could not write the report page (%lu)", GetLastError()); return; }
+    WideCharToMultiByte(CP_UTF8, 0, g_dir, -1, dir8, sizeof dir8, NULL, NULL);
+    html_esc(dir8, dirEsc, sizeof dirEsc);
     put(f, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>W3CrashFix crash report</title><style>"
-           "body{font:16px/1.5 Segoe UI,Arial,sans-serif;max-width:860px;margin:32px auto;padding:0 16px;background:#16181c;color:#e8e6e3}"
+           // the text keeps to the left: the small folder window sits in the lower right corner, a third of the screen wide
+           "body{font:16px/1.5 Segoe UI,Arial,sans-serif;width:min(860px,max(420px,60vw));margin:32px 0 32px 40px;padding:0 16px;box-sizing:border-box;background:#16181c;color:#e8e6e3}"
            "h1{font-size:26px;margin:0 0 4px}pre{background:#0d0e11;border:1px solid #333;border-radius:6px;padding:14px;white-space:pre-wrap;word-break:break-word}"
-           ".b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
-           ".g{background:#30363d}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}"
+           "a{color:#8ab4f8}.b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
+           ".g{background:#30363d;padding:6px 12px;font-weight:400}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}li{margin:4px 0}"
            "</style></head><body><h1>The Witcher 3 crashed</h1>"
            "<p>W3CrashFix noticed the crash and saved a report on your PC. <b>Nothing has been sent anywhere.</b> "
-           "If you would like to help, you can send the summary below with one of the two buttons.</p><pre id=\"s\">");
+           "If you would like to help, you can send the crash log to the mod's author with the button below.</p>"
+           "<p class=\"s\">This page is a file on your own PC, not a website: look at the address bar, it starts with <code>file:</code>. "
+           "The mod itself never connects to the internet. Only your browser does, and only when you click the button.</p><pre id=\"s\">");
     html_esc(g_crSum, g_crEsc, sizeof g_crEsc); put(f, g_crEsc);
-    put(f, "</pre><p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"https://github.com/Havoc104/W3CrashFix/issues/new?title=");
-    snprintf(title, sizeof title, "Crash report: 0x%08lX at %s", (unsigned long)code, at);
-    url_enc(title, g_crEnc, sizeof g_crEnc); put(f, g_crEnc);
-    put(f, "&amp;body=");
-    snprintf(g_crBody, sizeof g_crBody, "%s\r\nPlease attach W3CrashFix.crash.log from the game's bin\\x64_dx12 folder: drag the file into this text box.\r\n", g_crSum);
-    url_enc(g_crBody, g_crEnc, sizeof g_crEnc); put(f, g_crEnc);
-    put(f, "\">Report on GitHub</a><button class=\"b g\" onclick=\"nexus()\">Copy summary and open Nexus Mods</button></p>"
-           "<p class=\"s\">The GitHub button opens a new issue with the summary already filled in (you need a GitHub account). "
-           "The Nexus button copies the summary and opens the mod's Posts tab, where you can paste it.</p>"
-           "<p>The full log of the crashed session is saved here:<br><code>");
-    WideCharToMultiByte(CP_UTF8, 0, g_dir, -1, dir8, sizeof dir8, NULL, NULL);
-    html_esc(dir8, dirEsc, sizeof dirEsc); put(f, dirEsc);
-    put(f, "W3CrashFix.crash.log</code><br>Please add that file to your report. It stays there until the game crashes again.</p>"
+    put(f, "</pre><p><b>The file to send:</b><br><code>");
+    put(f, dirEsc);
+    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log</code><br><span class=\"s\">A small folder window has opened in the lower right corner that holds only this file. "
+           "If this page covers it, click it on the taskbar, or use the button further down to copy the file's path. The file starts with the summary above and stays there until the game crashes again.</span></p>"
+           "<p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\">Send the crash log</a></p>"
+           "<p><b>How it works</b></p><ol>"
+           "<li>Click the button. A pCloud page opens. If it shows a cookie notice, answer it first; it can cover the Upload button.</li>"
+           "<li>Drag the file from the folder window onto that page.</li>"
+           "<li>Type any name you like. A made-up one is fine.</li>"
+           "<li>Click Upload. When you see &quot;Files are uploaded!&quot;, you are done and can close that tab.</li></ol>"
+           "<p class=\"s\">pCloud then offers you an account. You don't need one.</p>"
+           "<p class=\"s\">Folder window gone? <button class=\"b g\" data-p=\"");
+    put(f, dirEsc);
+    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Copy the file's path</button> Then click on the pCloud page to add files, "
+           "paste the path into the &quot;File name&quot; box with Ctrl+V and press Enter.</p>"
+           "<p>Thanks for sending your crash log. It helps find and fix crashes in W3CrashFix.</p>"
+           "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The file holds the summary "
+           "above and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
+           "and the folder names of your in-game mods. "
+           "Only the mod's author can see uploaded files. The &quot;Report id&quot; is a random number made on your PC, so that several "
+           "reports from the same installation can be recognised. It says nothing about you; remove the <code>ReportId</code> line from "
+           "<code>W3CrashFix.ini</code> (next to the mod, in the game's <code>bin\\x64_dx12</code> folder) to get a new one.</p>"
+           "<p class=\"s\">A report sent this way can't be answered. For questions, use the "
+           "<a target=\"_blank\" rel=\"noopener\" href=\"https://www.nexusmods.com/witcher3/mods/15624?tab=posts\">posts on Nexus Mods</a> or the "
+           "<a target=\"_blank\" rel=\"noopener\" href=\"https://github.com/Havoc104/W3CrashFix/issues\">issues on GitHub</a>.</p>"
            "<p class=\"s\">The game's own crash reporter may also appear. That one reports to the game's developers; this page is only about the W3CrashFix mod. You can use both.</p>"
-           "<p class=\"s\">Don't want this page to open after a crash? Create an empty file named <code>W3CrashFix.noreport</code> "
-           "in that folder. The crash log is still saved.</p>"
-           "<script>function nexus(){var t=document.getElementById('s').innerText,a=document.createElement('textarea');"
+           "<p class=\"s\">Don't want this page to open after a crash? Open <code>W3CrashFix.ini</code> (next to the mod, in the game's <code>bin\\x64_dx12</code> folder) with Notepad and "
+           "change <code>OpenReportPage=1</code> to <code>OpenReportPage=0</code>. The crash log is still saved.</p>"
+           // footnote: why the report is shown in the browser (the other ways that were considered, and why not those).
+           // Never call it a "web page": it is a local file and not on the web.
+           "<hr style=\"border:0;border-top:1px solid #333;margin:22px 0 10px\">"
+           "<p class=\"s\"><b>Why use my browser?</b> It is on purpose. A window inside the crashed game could freeze, or hide behind "
+           "the game. A separate helper program would put a second executable in your game folder. Asking at the next game start would "
+           "come too late for anyone who had removed the mod by then. Your browser is a program that is working right after the crash, "
+           "and showing this file in it adds nothing to your game folder but the file itself.</p>"
+           // the only script on the page: puts the file's path on the clipboard when the small button is clicked
+           "<script>function cp(b){var t=b.getAttribute('data-p'),a=document.createElement('textarea');"
            "a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a);"
            "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).catch(function(){})}"
-           "window.open('https://www.nexusmods.com/witcher3/mods/15624?tab=posts','_blank')}</script></body></html>");
+           "b.textContent='Path copied'}</script></body></html>");
     CloseHandle(f);
 
-    wchar_t off[MAX_PATH]; lstrcpyW(off, g_dir); lstrcatW(off, L"W3CrashFix.noreport");
-    if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) { logf("crash report: saved; the page was not opened because W3CrashFix.noreport exists"); return; }
-    wchar_t cmd[MAX_PATH + 32]; wsprintfW(cmd, L"explorer.exe \"%s\"", path);
-    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
-    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
-        logf("crash report: saved and opened W3CrashFix-report.html");
-    } else logf("crash report: saved, but the page could not be opened (%lu)", GetLastError());
+    if (!g_openPage) { logf("crash report: saved; the page was not opened because OpenReportPage=0 in W3CrashFix.ini"); return; }
+    // The folder window and the report page are opened and arranged on a thread of their own, and this thread
+    // waits for it for at most twelve seconds (see the rules above find_report_folder). If that thread should ever
+    // get stuck, the crash path still ends here and the game's own crash reporter gets its turn.
+    lstrcpyW(g_crPage, path);
+    HANDLE wt = CreateThread(NULL, 0, report_windows, NULL, 0, NULL);
+    if (!wt) { logf("crash report: saved, but the windows could not be opened (%lu)", GetLastError()); return; }
+    if (WaitForSingleObject(wt, 12000) != WAIT_OBJECT_0) logf("crash report: opening the windows took longer than 12 seconds - not waited for any longer");
+    CloseHandle(wt);
 }
-
 // Top-level filter: runs when nothing else handled the exception, i.e. the game is really crashing.
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     if (InterlockedExchange(&g_crashed, 1) == 0) crash_report(ep);
@@ -682,9 +979,9 @@ static void start_work(void);
 #ifdef W3_LICENSE
 // ---------------------------------------------------------------- license dialog
 // At game start the mod shows a Windows dialog with the MIT License. Until the user accepts with OK, the mod does
-// nothing: the fix is switched off, no hooks, no crash report. OK accepts: it writes the id of the license text into
-// W3CrashFix.accepted next to the mod, and the dialog is not shown again unless the license changes (the installer
-// writes the same file when the user accepts there). OK with the "I decline" box ticked renames the mod's own file to
+// nothing: the fix is switched off, no hooks, no crash report. OK accepts: it stores the id of the license text as
+// LicenseAccepted in W3CrashFix.ini next to the mod, and the dialog is not shown again unless the license changes (the
+// installer stores the same when the user accepts there). OK with the "I decline" box ticked renames the mod's own file to
 // W3CrashFix.removed, so that it no longer loads; nothing is deleted and no other program is started.
 // The dialog is only shown on a game build the mod supports: on any other build the fix is off anyway.
 #include "w3cf_license.h"
@@ -693,6 +990,7 @@ static void start_work(void);
 #define ID_INTRO   104
 #define ID_LICENSE 105
 #define ID_NOTE    106
+#define ID_CHANGED 108
 #define ID_SOURCE  107
 static HINSTANCE g_hmod;
 static wchar_t g_self[MAX_PATH];                     // full path of the mod's own file
@@ -705,19 +1003,17 @@ static const char g_licIntro[] =
     "W3CrashFix is then switched off and removed from this game.";
 static const char g_licText[] = W3CF_LICENSE_TEXT;
 static DWORD g_licOpened;                            // when the dialog appeared (GetTickCount)
+static int g_licOlder;                               // an acceptance is stored, but for an earlier license text
+static const char g_licChanged[] = "The license has changed since you accepted it. That is why this window is shown once more.";
 
-// The acceptance is remembered per license text: W3CrashFix.accepted holds the id of the license it was given for
-// (W3CF_LICENSE_ID). With another id, or an empty or unreadable file, the dialog is shown again.
+// The acceptance is remembered per license text: LicenseAccepted in W3CrashFix.ini holds the id of the license it was
+// given for (W3CF_LICENSE_ID). Without it the dialog is shown; with another id it is shown again and says why.
 static int accepted_this_license(void) {
-    wchar_t path[MAX_PATH]; lstrcpyW(path, g_dir); lstrcatW(path, L"W3CrashFix.accepted");
-    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE) return 0;
-    char buf[64]; DWORD n = 0;
-    if (!ReadFile(f, buf, sizeof buf - 1, &n, NULL)) n = 0;
-    CloseHandle(f);
-    while (n && (buf[n - 1] == '\r' || buf[n - 1] == '\n' || buf[n - 1] == ' ')) n--;
-    buf[n] = 0;
-    return !strcmp(buf, W3CF_LICENSE_ID);
+    char buf[64]; ini_get(L"LicenseAccepted", buf, sizeof buf);
+    if (!buf[0]) return 0;
+    if (!strcmp(buf, W3CF_LICENSE_ID)) return 1;
+    g_licOlder = 1;                                  // accepted before, but another license text: the dialog says so
+    return 0;
 }
 
 static WORD *dlg_item(WORD *p, DWORD style, short x, short y, short cx, short cy, WORD id, WORD cls, const wchar_t *text) {
@@ -739,6 +1035,7 @@ static INT_PTR CALLBACK lic_proc(HWND d, UINT m, WPARAM w, LPARAM l) {
     case WM_INITDIALOG:
         SetWindowTextA(d, g_licTitle);
         SetDlgItemTextA(d, ID_INTRO, g_licIntro);
+        if (g_licOlder) SetDlgItemTextA(d, ID_CHANGED, g_licChanged);
         {   // Keep the company's and the game's name on one line each: no-break spaces inside them, so the text
             // box never wraps there.
             static wchar_t lic[4000];
@@ -785,18 +1082,22 @@ static int license_dialog(void) {
     DLGTEMPLATE *t = (DLGTEMPLATE *)buf;
     t->style = DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION;   // no WS_SYSMENU: no X in the title bar
     t->dwExtendedStyle = WS_EX_TOPMOST;                            // stays visible on top of the game's window
-    t->cdit = 6; t->cx = 300; t->cy = 254;
+    // After an acceptance of an earlier license text, one extra line on top says why the window is back; everything
+    // else moves down by o dialog units.
+    short o = g_licOlder ? 22 : 0;
+    t->cdit = g_licOlder ? 7 : 6; t->cx = 300; t->cy = 254 + o;
     WORD *p = (WORD *)(t + 1);
     *p++ = 0; *p++ = 0; *p++ = 0;                                  // no menu, default dialog class, title set later
     *p++ = 9;                                                      // font: 9 pt Segoe UI
     for (const wchar_t *f = L"Segoe UI"; *f; f++) *p++ = *f;
     *p++ = 0;
-    p = dlg_item(p, SS_LEFT, 7, 7, 286, 64, ID_INTRO, 0x82, L"");
-    p = dlg_item(p, ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 7, 74, 286, 118, ID_LICENSE, 0x81, L"");
-    p = dlg_item(p, BS_AUTOCHECKBOX | WS_TABSTOP, 7, 198, 220, 12, ID_DECLINE, 0x80, L"I decline. Remove W3CrashFix from this game.");
-    p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, 218, 100, 15, ID_SOURCE, 0x80, L"View source code");
-    p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 193, 218, 100, 15, ID_ACCEPT, 0x80, L"OK (Apply this mod)");   // text changes with the decline box
-    p = dlg_item(p, SS_RIGHT, 7, 238, 286, 10, ID_NOTE, 0x82, L"This window will not appear again unless the license changes.");
+    if (g_licOlder) p = dlg_item(p, SS_LEFT, 7, 7, 286, 18, ID_CHANGED, 0x82, L"");
+    p = dlg_item(p, SS_LEFT, 7, 7 + o, 286, 64, ID_INTRO, 0x82, L"");
+    p = dlg_item(p, ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 7, 74 + o, 286, 118, ID_LICENSE, 0x81, L"");
+    p = dlg_item(p, BS_AUTOCHECKBOX | WS_TABSTOP, 7, 198 + o, 220, 12, ID_DECLINE, 0x80, L"I decline. Remove W3CrashFix from this game.");
+    p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 7, 218 + o, 100, 15, ID_SOURCE, 0x80, L"View source code");
+    p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 193, 218 + o, 100, 15, ID_ACCEPT, 0x80, L"OK (Apply this mod)");   // text changes with the decline box
+    p = dlg_item(p, SS_RIGHT, 7, 238 + o, 286, 10, ID_NOTE, 0x82, L"This window will not appear again unless the license changes.");
     INT_PTR r = DialogBoxIndirectParamW(g_hmod, t, NULL, lic_proc, 0);
     if (r < 0) logf("license: the dialog could not be shown (error %lu)", GetLastError());
     return (int)r;
@@ -853,12 +1154,11 @@ static void release_game(void) {
 static DWORD WINAPI license_thread(LPVOID unused) {
     (void)unused;
     logf("license: asking the user to accept the MIT License");
+    if (g_licOlder) logf("license: an acceptance of an earlier license text was found - the window says that the license has changed");
     int r = license_dialog();
     if (r == 1) {
-        wchar_t path[MAX_PATH];
-        HANDLE f = create_in_dir(L"W3CrashFix.accepted", path);
-        if (f != INVALID_HANDLE_VALUE) { put(f, W3CF_LICENSE_ID); CloseHandle(f); logf("license: accepted (W3CrashFix.accepted written; the dialog will not be shown again unless the license changes)"); }
-        else logf("license: accepted, but W3CrashFix.accepted could not be written (error %lu) - the dialog will return", GetLastError());
+        if (ini_set(L"LicenseAccepted", W3CF_LICENSE_ID)) logf("license: accepted (saved in W3CrashFix.ini; the dialog will not be shown again unless the license changes)");
+        else logf("license: accepted, but W3CrashFix.ini could not be written (error %lu) - the dialog will return", GetLastError());
         g_accepted = 1;
         if (g_fixInstalled) {
             g_fixActive = 1;
@@ -867,6 +1167,7 @@ static DWORD WINAPI license_thread(LPVOID unused) {
         start_work();
     } else if (r == 3) {
         wchar_t to[MAX_PATH]; lstrcpyW(to, g_dir); lstrcatW(to, L"W3CrashFix.removed");
+        DeleteFileW(g_ini);                                         // the settings go too: an earlier acceptance, the report id
         char msg[900], self8[MAX_PATH * 3], to8[MAX_PATH * 3];
         WideCharToMultiByte(CP_ACP, 0, g_self, -1, self8, sizeof self8, NULL, NULL);
         WideCharToMultiByte(CP_ACP, 0, to, -1, to8, sizeof to8, NULL, NULL);
@@ -894,6 +1195,10 @@ static HANDLE open_log(const wchar_t *path) {
 
 // Everything the mod does besides the fix itself: crash report, heap statistics. Runs only after the license is accepted.
 static void start_work(void) {
+    char opv[8]; ini_get(L"OpenReportPage", opv, sizeof opv);
+    if (!opv[0]) ini_set(L"OpenReportPage", "1");        // make the setting visible to anyone who opens the file
+    load_report_id();
+    scan_mods();
     guard_filter(1);
     AddVectoredExceptionHandler(1, crash_notice);
 #ifdef W3_CRASHTEST
@@ -919,8 +1224,12 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         wchar_t *s = wcsrchr(p, L'\\'); if (s) s[1] = 0;
         lstrcpyW(g_dir, p);
         lstrcpyW(prev, p);
-        lstrcatW(p, L"W3CrashFix.log");
-        lstrcatW(prev, L"W3CrashFix.previous.log");
+        // The activity log. (Up to 1.5.0 it was W3CrashFix.log, which was easy to mix up with the crash log.)
+        wchar_t old[MAX_PATH], oldPrev[MAX_PATH];
+        lstrcpyW(old, p); lstrcatW(old, L"W3CrashFix.log");
+        lstrcpyW(oldPrev, p); lstrcatW(oldPrev, L"W3CrashFix.previous.log");
+        lstrcatW(p, L"W3CrashFix.activity.log");
+        lstrcatW(prev, L"W3CrashFix.activity.previous.log");
 #ifdef W3_ASI
         const char *flavor = "ASI plugin";
 #else
@@ -938,12 +1247,17 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
             return TRUE;   // keep the mutex handle open for the process lifetime
         }
         // One log per game session; the previous session's log is kept (useful after a crash).
-        MoveFileExW(p, prev, MOVEFILE_REPLACE_EXISTING);
+        // Logs under the old names: the last one becomes this session's "previous" log if there is none yet; the
+        // rest is removed, so that no stale log is left to be read by mistake.
+        int hadPrev = MoveFileExW(p, prev, MOVEFILE_REPLACE_EXISTING);
+        if (!hadPrev) MoveFileExW(old, prev, MOVEFILE_REPLACE_EXISTING);
+        DeleteFileW(old); DeleteFileW(oldPrev);
         g_log = open_log(p);
         logf("==== W3CrashFix %s (%s) loaded, pid %lu ====", W3CF_VERSION, flavor, GetCurrentProcessId());
         g_flavor = flavor;
+        load_settings();
 #ifdef W3_LICENSE
-        // The license: accepted for this version in an earlier session (W3CrashFix.accepted), or asked in a dialog.
+        // The license: accepted for this version in an earlier session (W3CrashFix.ini), or asked in a dialog.
         // The dialog is only for the game itself; in any other program the mod never patches anything anyway.
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(NULL, exe, MAX_PATH);

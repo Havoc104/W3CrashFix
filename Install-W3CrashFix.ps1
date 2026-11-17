@@ -26,8 +26,17 @@ if ($Uninstall) {
     $removed = 0
     # also what the license dialog can leave behind: the mod's file renamed after a decline, and the acceptance note
     foreach ($f in $dll, $asiFile, (Join-Path $bin 'W3CrashFix.removed')) { if (Test-Ours $f) { Remove-Item $f; "Removed $(Split-Path $f -Leaf)"; $removed++ } }
-    $acc = Join-Path $bin 'W3CrashFix.accepted'
-    if (Test-Path $acc) { Remove-Item $acc; 'Removed W3CrashFix.accepted'; $removed++ }
+    foreach ($leaf in 'W3CrashFix.ini', 'W3CrashFix.accepted', 'W3CrashFix.id', 'W3CrashFix.noreport') {   # the mod's settings, in this version's and in earlier forms
+        $acc = Join-Path $bin $leaf
+        if (Test-Path $acc) { Remove-Item $acc; "Removed $leaf"; $removed++ }
+    }
+    # what a crash report left: the report page and the crash log (in its own folder, or next to the mod in earlier versions)
+    foreach ($leaf in 'W3CrashFix-report.html', 'W3CrashFix.crash.log', 'W3CrashFix crash report\W3CrashFix.crash.log') {
+        $cr = Join-Path $bin $leaf
+        if (Test-Path -LiteralPath $cr) { Remove-Item -LiteralPath $cr; "Removed $leaf"; $removed++ }
+    }
+    $crDir = Join-Path $bin 'W3CrashFix crash report'
+    if ((Test-Path -LiteralPath $crDir) -and -not (Get-ChildItem -LiteralPath $crDir -Force)) { Remove-Item -LiteralPath $crDir; 'Removed W3CrashFix crash report (folder)' }
     if (-not $removed) { 'Not installed.' }
     return
 }
@@ -44,4 +53,4 @@ if ($Asi) {
     Copy-Item (Find-Source 'dinput8.dll') $dll -Force
     "Installed dinput8.dll in $bin"
 }
-"After starting the game, $bin\W3CrashFix.log should contain a line with 'ACTIVE'."
+"After starting the game, $bin\W3CrashFix.activity.log should contain a line with 'ACTIVE'."

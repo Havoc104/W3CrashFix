@@ -55,6 +55,19 @@ static DWORD WINAPI make_window(LPVOID unused) {
     return 0;
 }
 
+// For "crashwin": a visible window whose thread stops answering messages.
+static volatile int g_frozenShown;
+static DWORD WINAPI frozen_window(LPVOID unused) {
+    (void)unused;
+    HWND h = CreateWindowExW(0, L"STATIC", L"W3CrashFix crash report (stand-in for a frozen game window)", WS_OVERLAPPEDWINDOW,
+                             60, 60, 520, 120, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    ShowWindow(h, SW_SHOWNORMAL);                          // twice: the first call may be overruled by how the
+    ShowWindow(h, SW_SHOWNORMAL);                          // program was started (hidden); the second one shows it
+    g_frozenShown = h && IsWindowVisible(h);
+    Sleep(INFINITE);                                       // never pumps messages
+    return 0;
+}
+
 int wmain(int argc, wchar_t **argv) {
     if (argc < 2) { puts("usage: witcher3.exe <path to W3CrashFix.asi or dinput8.dll>"); return 2; }
     volatile const unsigned char *keep[] = {pad0, f_ensure, f_forcenew, f_invalidate, f_createpage, f_vecgrow}; (void)keep;
@@ -90,6 +103,18 @@ int wmain(int argc, wchar_t **argv) {
         if (!press(101, 102) || !press(IDCANCEL, 0)) return 4;   // the one button of an MB_OK box has id 2
         Sleep(500);
         return 0;
+    }
+    // Argument "crashwin": like "crash", but first a second thread creates a visible window and then never answers
+    // a message again, like the window of a game that is frozen in a crash. Its title even begins like the report
+    // page's. The mod's window handling after a crash must neither wait for this window nor mistake it for the
+    // browser; the test passes if this program ends by itself. (A test build once hung on exactly this.)
+    if (argc > 2 && !wcscmp(argv[2], L"crashwin")) {
+        HANDLE th = CreateThread(NULL, 0, frozen_window, NULL, 0, NULL);
+        (void)th;
+        Sleep(1000);
+        if (!g_frozenShown) { puts("the frozen stand-in window is not visible, so the test would prove nothing"); return 9; }
+        SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+        *(volatile int *)0 = 1;
     }
     // Argument "crash": crash on purpose, so the mod's crash report (log line, crash log, report page) can be checked.
     if (argc > 2 && !wcscmp(argv[2], L"crash")) {

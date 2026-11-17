@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- The installer's icon: the black cat from the project's banner, in front of the full moon. Own drawing, MIT License.
+       src\installer.ico is rendered from this file. The element with id="edge" is only switched on for the smallest
+       sizes (16 to 24 pixels), so that the dark tile stays visible on a dark background. -->
+  <defs>
+    <radialGradient id="moon" cx="0.42" cy="0.4" r="0.65">
+      <stop offset="0" stop-color="#fff6de"/><stop offset=".7" stop-color="#efdcae"/><stop offset="1" stop-color="#d8bf86"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe6a6"/><stop offset=".5" stop-color="#e2b45a"/><stop offset="1" stop-color="#a8772c"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14203a"/><stop offset="1" stop-color="#070b14"/>
+    </linearGradient>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="tile"><rect width="256" height="256" rx="52"/></clipPath>
+    <g id="catShape" stroke-linejoin="round">
+      <path d="M1675,850 C1790,872 1838,806 1806,740 C1790,708 1756,698 1738,712" fill="none" stroke-width="30" stroke-linecap="round"/>
+      <path d="M1418,525 C1380,600 1368,720 1386,800 C1396,842 1436,858 1500,858 C1590,858 1660,850 1688,812 C1712,760 1680,680 1622,620 C1585,582 1545,552 1505,532 Z"/>
+      <path d="M1393,440 L1386,354 L1448,404 Z"/><path d="M1480,400 L1524,340 L1534,432 Z"/>
+      <circle cx="1460" cy="468" r="74"/><ellipse cx="1404" cy="494" rx="26" ry="21"/>
+    </g>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="256" height="256" fill="url(#sky)"/>
+    <!-- the cat is the banner's, in the banner's own coordinates; the moon is drawn smaller than in the banner so the cat can be large -->
+    <g transform="scale(.8) translate(-1300,-300)">
+      <circle cx="1475" cy="420" r="150" fill="url(#moon)"/>
+      <g fill="#cdb47a" opacity=".35"><circle cx="1390" cy="350" r="20"/><circle cx="1560" cy="500" r="26"/><circle cx="1545" cy="330" r="11"/></g>
+      <use href="#catShape" fill="#2f3d5c" stroke="#2f3d5c" stroke-width="7"/>
+      <use href="#catShape" fill="#05070b" stroke="#05070b" stroke-width="0.01"/>
+      <g fill="#141b2b"><path d="M1398,428 L1394,378 L1432,410 Z"/><path d="M1492,404 L1518,368 L1524,422 Z"/></g>
+      <g filter="url(#glow)">
+        <path d="M1404,458 C1414,446 1436,446 1446,458 C1436,470 1414,470 1404,458 Z" fill="#ffb12a"/>
+        <path d="M1462,454 C1472,442 1494,442 1504,454 C1494,466 1472,466 1462,454 Z" fill="#ffb12a"/>
+      </g>
+      <ellipse cx="1425" cy="458" rx="2.6" ry="9" fill="#05070b"/><ellipse cx="1483" cy="454" rx="2.6" ry="9" fill="#05070b"/>
+      <path d="M1404,540 C1428,572 1478,576 1506,548" fill="none" stroke="url(#gold)" stroke-width="3" stroke-dasharray="5 3"/>
+      <circle cx="1452" cy="582" r="19" fill="url(#gold)" stroke="#6b4a18" stroke-width="2"/>
+      <!-- the paw on the medallion -->
+      <g transform="translate(1452 584) scale(.42)" fill="#6b4a18">
+        <ellipse cx="0" cy="10" rx="17" ry="14"/>
+        <ellipse cx="-19" cy="-9" rx="7" ry="9" transform="rotate(-20 -19 -9)"/>
+        <ellipse cx="-7" cy="-19" rx="7" ry="9" transform="rotate(-6 -7 -19)"/>
+        <ellipse cx="7" cy="-19" rx="7" ry="9" transform="rotate(6 7 -19)"/>
+        <ellipse cx="19" cy="-9" rx="7" ry="9" transform="rotate(20 19 -9)"/>
+      </g>
+      <!-- whiskers -->
+      <g stroke="#c3cde3" stroke-width="2.4" opacity=".75" fill="none" stroke-linecap="round">
+        <path d="M1385,496 C1352,488 1330,489 1310,495"/><path d="M1386,504 C1352,506 1330,512 1312,522"/>
+        <path d="M1390,511 C1362,521 1344,533 1330,547"/>
+      </g>
+    </g>
+  </g>
+  <rect id="edge" x="6" y="6" width="244" height="244" rx="46" fill="none" stroke="#6f83b3" stroke-width="12" display="none"/>
+</svg>

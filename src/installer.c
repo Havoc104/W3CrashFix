@@ -23,7 +23,7 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"1.5.0-5.0.16"
+#define W3CF_VERSION   L"1.6.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
@@ -222,11 +222,21 @@ static DWORD remove_ours(const wchar_t *root, const wchar_t *name) {
 // What the mod's license dialog can leave behind in bin\x64_dx12:
 //   W3CrashFix.removed  - the mod's own file, renamed when the user declined the license (Windows doesn't let the mod
 //                         delete itself while the game has it loaded)
-//   W3CrashFix.accepted - a small text file with the version the license was accepted for
+//   W3CrashFix.ini      - the mod's settings: the license text that was accepted, the random report id, and
+//                         whether the report page opens after a crash (see w3crashfix.c)
+//   W3CrashFix.accepted, W3CrashFix.id, W3CrashFix.noreport - the same things as separate small files, from
+//                         earlier versions; the mod takes them over into the ini at its next start
 // The license is accepted either here, on Install, or in the mod's own dialog at game start. Both store the id of the
-// license text (W3CF_LICENSE_ID) in W3CrashFix.accepted; with that file in place the game starts without the dialog.
+// license text (W3CF_LICENSE_ID) as LicenseAccepted in W3CrashFix.ini; with that in place the game starts without the dialog.
+#define W3CF_LICENSE_ID_W_(x) L##x
+#define W3CF_LICENSE_ID_W__(x) W3CF_LICENSE_ID_W_(x)
+#define W3CF_LICENSE_ID_W W3CF_LICENSE_ID_W__(W3CF_LICENSE_ID)
 static int license_accepted(const wchar_t *root) {
-    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p);
+    wchar_t p[MAX_PATH], v[64]; bin_file(root, L"W3CrashFix.ini", p);
+    v[0] = 0; GetPrivateProfileStringW(L"W3CrashFix", L"LicenseAccepted", L"", v, 64, p);
+    if (!lstrcmpW(v, W3CF_LICENSE_ID_W)) return 1;
+    // an acceptance stored by 1.5.0, which the mod has not taken over yet
+    bin_file(root, L"W3CrashFix.accepted", p);
     HANDLE f = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) return 0;
     char buf[64]; DWORD n = 0;
@@ -237,16 +247,20 @@ static int license_accepted(const wchar_t *root) {
     return !strcmp(buf, W3CF_LICENSE_ID);
 }
 static DWORD write_accepted(const wchar_t *root) {
-    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p);
-    HANDLE f = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE) return GetLastError();
-    DWORD w = 0; BOOL ok = WriteFile(f, W3CF_LICENSE_ID, (DWORD)strlen(W3CF_LICENSE_ID), &w, NULL);
-    DWORD e = ok ? 0 : GetLastError();
-    CloseHandle(f);
-    return e;
+    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.ini", p);
+    if (!WritePrivateProfileStringW(L"W3CrashFix", L"LicenseAccepted", W3CF_LICENSE_ID_W, p)) return GetLastError();
+    bin_file(root, L"W3CrashFix.accepted", p); DeleteFileW(p);  // an older acceptance in the old form is replaced by this
+    return 0;
 }
 static int removed_left(const wchar_t *root) { wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.removed", p); return exists(p) && ours(p); }
-static int accepted_left(const wchar_t *root) { wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p); return exists(p); }
+static const wchar_t *const g_settingsFiles[] = { L"W3CrashFix.ini", L"W3CrashFix.accepted", L"W3CrashFix.id", L"W3CrashFix.noreport" };
+static int accepted_left(const wchar_t *root) {                 // settings of this or an earlier version left behind
+    wchar_t p[MAX_PATH];
+    for (int i = 0; i < 4; i++) { bin_file(root, g_settingsFiles[i], p); if (exists(p)) return 1; }
+    bin_file(root, L"W3CrashFix-report.html", p);  if (exists(p)) return 1;   // what a crash report left
+    bin_file(root, L"W3CrashFix crash report", p); if (exists(p)) return 1;
+    return 0;
+}
 static DWORD install_standalone(const wchar_t *root) {
     if (dinput_state(root) == 2) return ERROR_ALREADY_EXISTS;   // someone else's dinput8.dll: don't overwrite
     DWORD e = write_resource(IDR_STANDALONE, root, L"dinput8.dll");
@@ -262,8 +276,17 @@ static DWORD install_asi(const wchar_t *root) {
 static DWORD uninstall_all(const wchar_t *root) {
     DWORD a = remove_ours(root, L"dinput8.dll"), b = remove_ours(root, L"W3CrashFix.asi");
     DWORD c = remove_ours(root, L"W3CrashFix.removed"), d = 0;
-    wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.accepted", p);
-    if (exists(p) && !DeleteFileW(p)) d = GetLastError();
+    wchar_t p[MAX_PATH];
+    for (int i = 0; i < 4; i++) {                               // the settings, in this version's and in earlier forms
+        bin_file(root, g_settingsFiles[i], p);
+        if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
+    }
+    // What the crash report left: the report page, and the crash log in its own folder (and a crash log of an
+    // earlier version, next to the mod). Only these known names; the folder is removed only if it is then empty.
+    bin_file(root, L"W3CrashFix-report.html", p);  if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
+    bin_file(root, L"W3CrashFix.crash.log", p);    if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
+    bin_file(root, L"W3CrashFix crash report\\W3CrashFix.crash.log", p); if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
+    bin_file(root, L"W3CrashFix crash report", p); if (exists(p)) RemoveDirectoryW(p);
     return a ? a : b ? b : c ? c : d;
 }
 
@@ -444,7 +467,7 @@ static void action(int install) {
         msg(m, MB_ICONERROR);
     } else if (install) {
         msg(L"W3CrashFix is installed.\n\nStart the game in DirectX 12 mode and load a save. "
-            L"bin\\x64_dx12\\W3CrashFix.log should then contain a line with \"ACTIVE\".\n\n"
+            L"bin\\x64_dx12\\W3CrashFix.activity.log should then contain a line with \"ACTIVE\".\n\n"
             L"W3CrashFix is free, but making and maintaining it costs time and money. Consider buying me a coffee "
             L"by clicking the button on the bottom left of the installer. For every cup of coffee I receive, "
             L"my cat gets a treat and some extra pets! \U0001F638", MB_ICONINFORMATION);
@@ -470,7 +493,7 @@ static void run_game(void) {
                                L"The ASI plugin only works through an ASI loader. W3CrashFix is made for and tested with "
                                L"Ultimate ASI Loader only; other ASI loaders are untested and not supported. If the plugin "
                                L"is not loaded, the game runs without the fix.\n\n"
-                               L"After starting the game you can check bin\\x64_dx12\\W3CrashFix.log: it should contain a "
+                               L"After starting the game you can check bin\\x64_dx12\\W3CrashFix.activity.log: it should contain a "
                                L"line with \"ACTIVE\".\n\nStart the game now?", L"W3CrashFix " W3CF_VERSION,
                         MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) return;
     }
@@ -571,7 +594,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
     LOGFONTW b = nm.lfMessageFont; b.lfWeight = FW_BOLD; b.lfHeight = b.lfHeight * 4 / 3;
     g_bold = CreateFontIndirectW(&b);
 
-    WNDCLASSW wc = { 0, wndproc, 0, 0, inst, LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION), LoadCursorW(NULL, (LPCWSTR)IDC_ARROW),
+    WNDCLASSW wc = { 0, wndproc, 0, 0, inst, LoadIconW(inst, MAKEINTRESOURCEW(1)), LoadCursorW(NULL, (LPCWSTR)IDC_ARROW),
                      GetSysColorBrush(COLOR_WINDOW), NULL, L"W3CrashFixInstaller" };
     RegisterClassW(&wc);
     RECT r = { 0, 0, S(560), S(366) };

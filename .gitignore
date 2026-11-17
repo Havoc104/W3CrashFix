@@ -11,3 +11,6 @@ Set-Fixes.ps1
 Disable-GraphicsMods.ps1
 Restore-GraphicsMods.ps1
 src/analyze_frametimes.py
+# not for publishing (yet): CDPR bug report draft, DxDiag (has PC details), promo drafts
+docs/
+promo/
