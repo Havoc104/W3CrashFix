@@ -112,6 +112,20 @@ if ($code -eq 0) {
         if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" }
     }
     if (([regex]::Matches($rp, '<script')).Count -ne 1) { throw 'test_diag: the report page must hold exactly one script (the copy button)' }
+    # 1.6.1: the Send button copies the crash log's path as well, and the steps say where to paste it.
+    foreach ($need in 'W3CrashFix crash report\W3CrashFix.crash.log" onclick="cp(this)">Send the crash log</a>', 'Click Here to Add Files', 'press Ctrl+V and then Enter', 'id="c"') {
+        if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" }
+    }
+    if (([regex]::Matches($rp, 'onclick="cp\(this\)"')).Count -ne 2) { throw 'test_diag: both the Send button and the small button must copy the path' }
+    # The footnote names the page's own size, and it must be right (KB with one decimal, rounded).
+    $rpBytes = (Get-Item "$t\W3CrashFix-report.html").Length
+    $want = '{0}.{1}' -f [math]::Floor([math]::Floor(($rpBytes * 10 + 512) / 1024) / 10), ([math]::Floor(($rpBytes * 10 + 512) / 1024) % 10)
+    if (-not $rp.Contains("but the file itself ($want KB), and the installer's Uninstall removes it.")) { throw "test_diag: the footnote does not give the page's size ($rpBytes bytes = $want KB)" }
+    # The page shows only "Fix active" and the verdict (Onno, 17 Nov 2026); the full summary stays in the crash log.
+    foreach ($need in 'Fix active: ', 'Verdict: ') { if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" } }
+    foreach ($gone in 'Mod: W3CrashFix', 'Report id: ', 'In-game mods:', 'Game build supported:', 'Registers:', 'Session length:', 'Graphics card:', 'Descriptor heaps:', 'Memory: VRAM', 'summary above') {
+        if ($rp.Contains($gone)) { throw "test_diag: report page still shows '$gone' (only Fix active and the verdict belong there)" }
+    }
     foreach ($gone in 'Report on GitHub', 'open Nexus Mods', 'issues/new', 'Open the folder', 'file:///') {
         if ($rp.Contains($gone)) { throw "test_diag: report page still contains '$gone'" }
     }
@@ -193,7 +207,7 @@ if ($WindowTest) {
     if ($ended -and $proc.ExitCode -eq 9) { throw 'window test: the frozen stand-in window was not visible, so the test proves nothing' }
     if (-not $ended) { Stop-Process -Id $proc.Id -Force; throw 'window test: the stand-in game was still there 30 seconds after its crash - the mod hangs in its crash handling' }
     $wl = Get-Content "$wt\W3CrashFix.activity.log" -Raw
-    foreach ($need in '!!!! CRASH: exception 0xC0000005', 'crash report: opened the folder', 'crash report: saved and opened W3CrashFix-report.html') {
+    foreach ($need in '!!!! CRASH: exception 0xC0000005', 'crash report: opened the folder', 'crash report: saved and opened W3CrashFix-report.html', 'always on top: ') {
         if (-not $wl.Contains($need)) { throw "window test: the log lacks '$need'" }
     }
     if ($wl.Contains('took longer than 12 seconds')) { throw 'window test: opening the windows ran into the 12-second limit' }

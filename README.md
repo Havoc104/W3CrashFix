@@ -18,7 +18,7 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.activity.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.6.0-5.0.16` is mod version 1.6.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.6.1-5.0.16` is mod version 1.6.1 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -81,7 +81,7 @@ ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use du
 Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 1.6.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.6.1-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -131,7 +131,7 @@ The mod notices a crash and helps you report it:
 - It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: mod version, a random report id, the in-game mods that were enabled, whether the fix was active, the crash address and the processor's registers, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file.
 - It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log**.
 
-**Sending a report.** The button opens an upload page of the author's online storage (pCloud). Drag the crash log from the small folder window onto that page, type any name you like (a made-up one is fine), and click Upload. You don't need an account. If the browser covers the folder window, click it on the taskbar.
+**Sending a report.** The button opens an upload page of the author's online storage (pCloud) and copies the crash log's path at the same time. On that page, click **Click Here to Add Files**, press Ctrl+V in the window that opens, and then Enter. Or drag the crash log from the small folder window onto the page; that window asks Windows to keep it on top. Then type any name you like (a made-up one is fine) and click Upload. You don't need an account.
 
 **The report page is a file on your own PC, not a website, and the mod itself never connects to the internet.** Only your browser does, and only when you click the button. Nothing leaves your PC unless you upload the file yourself. The reason the report is shown in your browser is explained at the bottom of that page.
 
@@ -165,6 +165,15 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 **The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
 
 ## Changelog
+
+### 1.6.1-5.0.16
+
+- Crash report, sending: the **Send the crash log** button now also copies the crash log's path. On the upload page you click **Click Here to Add Files**, paste with Ctrl+V and press Enter, so the folder window is no longer needed. In 1.6.0 that window went behind the browser as soon as you clicked there. Dragging still works.
+- The small folder window now asks Windows to keep it on top of other windows. Windows doesn't always allow that; the activity log says whether it did.
+- The report page is shorter: it shows only whether the fix was active and the verdict. The full summary stays at the top of the crash log, which is the file you send.
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** No, the fix itself is the same. 1.6.1 only makes sending a crash report easier.
 
 ### 1.6.0-5.0.16
 
@@ -245,7 +254,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, and the updates since then with the newer Claude Fable 5.2 model. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
 
 ## Support
 

@@ -424,7 +424,7 @@ static void install_fix(void) {
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 #define RVA_CRASH 0x280ad3d
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.6.0-5.0.16"
+#define W3CF_VERSION "1.6.1-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[128] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -674,8 +674,10 @@ static DWORD WINAPI report_windows(LPVOID unused) {
     // (tried in several ways on 17 Nov 2026; it is silently refused). What does work: the window that opens LAST
     // comes to the front by its own program's doing. So the report page is opened first, the mod waits until the
     // browser window is there and active, and only then is Explorer started on the crash log's folder: its new
-    // window opens in front of the browser. The mod then only makes it small and moves it to the lower right;
-    // it never changes the order of windows.
+    // window opens in front of the browser. The mod then makes it small and moves it to the lower right.
+    // Since 1.6.1 it also asks Windows to keep that window "always on top" (otherwise it goes behind the browser
+    // as soon as the user clicks there). Windows may refuse that without saying so; the mod reads it back and logs
+    // the answer. The report page no longer depends on it: its Send button copies the crash log's path as well.
     HWND fw = NULL, bw = NULL;
     // 1. The report page, in the user's default browser.
     wchar_t cmd[MAX_PATH + 32]; wsprintfW(cmd, L"explorer.exe \"%s\"", g_crPage);
@@ -699,7 +701,7 @@ static DWORD WINAPI report_windows(LPVOID unused) {
         } else logf("crash report: saved and opened W3CrashFix-report.html (its browser window was not found within 3 seconds)");
     } else logf("crash report: saved, but the page could not be opened (%lu)", GetLastError());
     // 2. Then the folder window on the crash log's own folder, with the file highlighted, for dragging it onto
-    //    the upload page. Made small and put in the lower right, without touching the order of windows.
+    //    the upload page. Made small, put in the lower right and asked to stay "always on top".
     wchar_t sel[2 * MAX_PATH + 80]; wsprintfW(sel, L"explorer.exe /select,\"%s" W3CF_REPORT_DIR_W L"\\W3CrashFix.crash.log\"", g_dir);
     STARTUPINFOW si2 = { sizeof si2 }; PROCESS_INFORMATION pi2;
     static folder_search fs;
@@ -719,11 +721,15 @@ static DWORD WINAPI report_windows(LPVOID unused) {
             if (cx > ww) cx = ww;
             if (cy > wh) cy = wh;
             if (IsZoomed(fw) || IsIconic(fw)) ShowWindowAsync(fw, SW_RESTORE);
-            SetWindowPos(fw, NULL, mi.rcWork.right - cx - 16, mi.rcWork.bottom - cy - 16, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+            // HWND_TOPMOST = "always on top"; asynchronous, so the mod never waits for Explorer (rule 2 above)
+            SetWindowPos(fw, HWND_TOPMOST, mi.rcWork.right - cx - 16, mi.rcWork.bottom - cy - 16, cx, cy, SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
             Sleep(500);                                  // let Explorer finish bringing it forward, then look
-            logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (%s found after %lu ms, %d such window(s) were open before; made small, lower right; in front of the browser: %s, checked)",
+            // GetWindowLongW only reads the window's style; it does not send a message, so it cannot wait either
+            int onTop = IsWindow(fw) && (GetWindowLongW(fw, GWL_EXSTYLE) & WS_EX_TOPMOST);
+            logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (%s found after %lu ms, %d such window(s) were open before; made small, lower right; in front of the browser: %s, checked; always on top: %s, checked)",
                  reused ? "an already open window" : "new window", GetTickCount() - t0, fs.nOld,
-                 !bw ? "no browser window to compare with" : (IsWindow(fw) && folder_in_front(fw, bw) ? "YES" : "NO"));
+                 !bw ? "no browser window to compare with" : (IsWindow(fw) && folder_in_front(fw, bw) ? "YES" : "NO"),
+                 onTop ? "YES" : "NO (Windows did not allow it)");
         } else logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (its window was not found in time, so it keeps Explorer's own size and place)");
     } else logf("crash report: the folder window could not be opened (%lu)", GetLastError());
     return 0;
@@ -799,9 +805,11 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     }
 
     // W3CrashFix-report.html
-    // One button: it opens the author's upload page in the user's browser, where the user picks the crash log.
-    // Together with the page the mod opens a folder window on the crash log's own folder (see below), so the user
-    // can drag the file onto the upload page; a page in a browser is not allowed to open Explorer itself.
+    // One button: it opens the author's upload page in the user's browser, where the user picks the crash log, and
+    // it copies the crash log's path at the same time, so the user can paste it into the upload page's file window
+    // (since 1.6.1: a click on the browser puts the browser in front of the folder window). Together with the page
+    // the mod opens a folder window on the crash log's own folder (see below), so the user can also drag the file
+    // onto the upload page; a page in a browser is not allowed to open Explorer itself.
     char dir8[3 * MAX_PATH], dirEsc[4 * MAX_PATH];
     f = create_in_dir(L"W3CrashFix-report.html", path);
     if (f == INVALID_HANDLE_VALUE) { logf("crash report: could not write the report page (%lu)", GetLastError()); return; }
@@ -818,27 +826,35 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "If you would like to help, you can send the crash log to the mod's author with the button below.</p>"
            "<p class=\"s\">This page is a file on your own PC, not a website: look at the address bar, it starts with <code>file:</code>. "
            "The mod itself never connects to the internet. Only your browser does, and only when you click the button.</p><pre id=\"s\">");
-    html_esc(g_crSum, g_crEsc, sizeof g_crEsc); put(f, g_crEsc);
+    // The page shows only whether the fix was active and the verdict (Onno, 17 Nov 2026: "the less clutter the better");
+    // the full summary stays at the top of the crash log, which is what gets sent.
+    {
+        char page[1024];
+        snprintf(page, sizeof page, "Fix active: %s\r\nVerdict: %s\r\n%s", g_fixActive ? "yes" : "no", verdict, test);
+        html_esc(page, g_crEsc, sizeof g_crEsc); put(f, g_crEsc);
+    }
     put(f, "</pre><p><b>The file to send:</b><br><code>");
     put(f, dirEsc);
     put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log</code><br><span class=\"s\">A small folder window has opened in the lower right corner that holds only this file. "
-           "If this page covers it, click it on the taskbar, or use the button further down to copy the file's path. The file starts with the summary above and stays there until the game crashes again.</span></p>"
-           "<p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\">Send the crash log</a></p>"
+           "You don't need it: the button below also copies the file's path. It stays there until the game crashes again.</span></p>"
+           "<p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
+    put(f, dirEsc);
+    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Send the crash log</a> <span class=\"s\" id=\"c\"></span></p>"
            "<p><b>How it works</b></p><ol>"
-           "<li>Click the button. A pCloud page opens. If it shows a cookie notice, answer it first; it can cover the Upload button.</li>"
-           "<li>Drag the file from the folder window onto that page.</li>"
+           "<li>Click the button. A pCloud page opens, and the crash log's path is copied. If the page shows a cookie notice, answer it first; it can cover the buttons.</li>"
+           "<li>On that page, click <b>Click Here to Add Files</b>. In the window that opens, press Ctrl+V and then Enter. "
+           "(Or drag the file from the small folder window onto the page.)</li>"
            "<li>Type any name you like. A made-up one is fine.</li>"
            "<li>Click Upload. When you see &quot;Files are uploaded!&quot;, you are done and can close that tab.</li></ol>"
            "<p class=\"s\">pCloud then offers you an account. You don't need one.</p>"
-           "<p class=\"s\">Folder window gone? <button class=\"b g\" data-p=\"");
+           "<p class=\"s\">Ctrl+V pasted nothing? <button class=\"b g\" data-p=\"");
     put(f, dirEsc);
-    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Copy the file's path</button> Then click on the pCloud page to add files, "
-           "paste the path into the &quot;File name&quot; box with Ctrl+V and press Enter.</p>"
+    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Copy the file's path</button> and paste it again into the &quot;File name&quot; box.</p>"
            "<p>Thanks for sending your crash log. It helps find and fix crashes in W3CrashFix.</p>"
-           "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The file holds the summary "
-           "above and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
+           "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The file holds a summary "
+           "and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
            "and the folder names of your in-game mods. "
-           "Only the mod's author can see uploaded files. The &quot;Report id&quot; is a random number made on your PC, so that several "
+           "Only the mod's author can see uploaded files. The &quot;Report id&quot; in the file is a random number made on your PC, so that several "
            "reports from the same installation can be recognised. It says nothing about you; remove the <code>ReportId</code> line from "
            "<code>W3CrashFix.ini</code> (next to the mod, in the game's <code>bin\\x64_dx12</code> folder) to get a new one.</p>"
            "<p class=\"s\">A report sent this way can't be answered. For questions, use the "
@@ -852,13 +868,28 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "<hr style=\"border:0;border-top:1px solid #333;margin:22px 0 10px\">"
            "<p class=\"s\"><b>Why use my browser?</b> It is on purpose. A window inside the crashed game could freeze, or hide behind "
            "the game. A separate helper program would put a second executable in your game folder. Asking at the next game start would "
-           "come too late for anyone who had removed the mod by then. Your browser is a program that is working right after the crash, "
-           "and showing this file in it adds nothing to your game folder but the file itself.</p>"
-           // the only script on the page: puts the file's path on the clipboard when the small button is clicked
+           "come too late for anyone who had removed the mod by then. Your browser is a program that is working right after the crash, ");
+    // The footnote names the page's own size (Onno, 17 Nov 2026). The size includes the number itself, so it is worked
+    // out from what is written so far plus the rest of the page, a second time if the number's length changed it.
+    static const char sizeHead[] = "and showing this file in it adds nothing to your game folder but the file itself (";
+    static const char sizeTail[] = " KB), and the installer's Uninstall removes it.</p>"
+           // the only script on the page: puts the file's path on the clipboard when the Send button or the small button
+           // is clicked. The Send link still opens the upload page as usual (nothing is stopped or redirected).
            "<script>function cp(b){var t=b.getAttribute('data-p'),a=document.createElement('textarea');"
            "a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a);"
            "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).catch(function(){})}"
-           "b.textContent='Path copied'}</script></body></html>");
+           "if(b.tagName=='A'){document.getElementById('c').textContent='The path is copied: paste it with Ctrl+V on the upload page.'}"
+           "else{b.textContent='Path copied'}}</script></body></html>";
+    DWORD sofar = SetFilePointer(f, 0, NULL, FILE_CURRENT);          // bytes written up to here
+    char kb[24] = "";
+    for (int pass = 0; pass < 3; pass++) {                            // settles after one or two passes
+        unsigned long total = sofar + (unsigned long)(sizeof sizeHead - 1 + strlen(kb) + sizeof sizeTail - 1);
+        unsigned long tenths = (total * 10 + 512) / 1024;               // KB with one decimal, rounded
+        char next[24]; snprintf(next, sizeof next, "%lu.%lu", tenths / 10, tenths % 10);
+        if (!strcmp(next, kb)) break;
+        lstrcpyA(kb, next);
+    }
+    put(f, sizeHead); put(f, kb); put(f, sizeTail);
     CloseHandle(f);
 
     if (!g_openPage) { logf("crash report: saved; the page was not opened because OpenReportPage=0 in W3CrashFix.ini"); return; }
