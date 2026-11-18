@@ -23,7 +23,7 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"1.6.1-5.0.16"
+#define W3CF_VERSION   L"1.7.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
@@ -254,9 +254,11 @@ static DWORD write_accepted(const wchar_t *root) {
 }
 static int removed_left(const wchar_t *root) { wchar_t p[MAX_PATH]; bin_file(root, L"W3CrashFix.removed", p); return exists(p) && ours(p); }
 static const wchar_t *const g_settingsFiles[] = { L"W3CrashFix.ini", L"W3CrashFix.accepted", L"W3CrashFix.id", L"W3CrashFix.noreport" };
+static const wchar_t *const g_logFiles[] = { L"W3CrashFix.activity.log", L"W3CrashFix.activity.previous.log", L"W3CrashFix.log", L"W3CrashFix.previous.log" };
 static int accepted_left(const wchar_t *root) {                 // settings of this or an earlier version left behind
     wchar_t p[MAX_PATH];
     for (int i = 0; i < 4; i++) { bin_file(root, g_settingsFiles[i], p); if (exists(p)) return 1; }
+    for (int i = 0; i < 4; i++) { bin_file(root, g_logFiles[i], p); if (exists(p)) return 1; }
     bin_file(root, L"W3CrashFix-report.html", p);  if (exists(p)) return 1;   // what a crash report left
     bin_file(root, L"W3CrashFix crash report", p); if (exists(p)) return 1;
     return 0;
@@ -272,7 +274,8 @@ static DWORD install_asi(const wchar_t *root) {
     if (!e) remove_ours(root, L"W3CrashFix.removed");
     return e ? e : remove_ours(root, L"dinput8.dll");           // our dinput8.dll would block the loader's name
 }
-// Uninstall leaves a clean folder: the mod's file and what the license dialog left behind. The logs stay.
+// Uninstall leaves a clean folder: the mod's file, what the license dialog and a crash report left behind, and
+// (since 1.7.0) the activity logs.
 static DWORD uninstall_all(const wchar_t *root) {
     DWORD a = remove_ours(root, L"dinput8.dll"), b = remove_ours(root, L"W3CrashFix.asi");
     DWORD c = remove_ours(root, L"W3CrashFix.removed"), d = 0;
@@ -287,6 +290,9 @@ static DWORD uninstall_all(const wchar_t *root) {
     bin_file(root, L"W3CrashFix.crash.log", p);    if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
     bin_file(root, L"W3CrashFix crash report\\W3CrashFix.crash.log", p); if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
     bin_file(root, L"W3CrashFix crash report", p); if (exists(p)) RemoveDirectoryW(p);
+    // Since 1.7.0 the activity logs go too (Onno, 18 Nov 2026: Uninstall left them behind), also the names up to
+    // 1.5.0. A log that cannot be removed (the game still running) does not count as a failed uninstall.
+    for (int i = 0; i < 4; i++) { bin_file(root, g_logFiles[i], p); if (exists(p)) DeleteFileW(p); }
     return a ? a : b ? b : c ? c : d;
 }
 
@@ -331,11 +337,11 @@ static void refresh(void) {
 
         if (!want_asi()) {
             if (di == 2 && hasLoader)
-                swprintf(c, 600, L"Ultimate ASI Loader is installed as dinput8.dll, so the standalone "
-                                 L"version can't be used. Choose the ASI plugin instead.");
+                swprintf(c, 600, L"Ultimate ASI Loader is installed as dinput8.dll. The standalone version would replace it, "
+                                 L"and every ASI mod would stop working, so it isn't installed here. Choose the ASI plugin instead.");
             else if (di == 2)
-                swprintf(c, 600, L"Another program's dinput8.dll is in bin\\x64_dx12, so the standalone version can't be "
-                                 L"installed (it would overwrite that file).");
+                swprintf(c, 600, L"Another mod's dinput8.dll is in bin\\x64_dx12. The standalone version would replace it, "
+                                 L"and that mod would stop working, so it isn't installed here.");
             else { swprintf(c, 600, L"Will install: bin\\x64_dx12\\dinput8.dll."); canInstall = 1; }
         } else if (hasLoader) {
             swprintf(c, 600, L"Ultimate ASI Loader found (as %ls).\r\nWill install: bin\\x64_dx12\\W3CrashFix.asi.", loader);

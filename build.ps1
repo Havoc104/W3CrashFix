@@ -102,10 +102,31 @@ if ($code -eq 0) {
     }
     if ((Test-Path "$t\W3CrashFix.noreport") -or (IniVal "$t\W3CrashFix.ini" 'OpenReportPage') -ne '0') { throw 'test_diag: W3CrashFix.noreport was not taken over into W3CrashFix.ini as OpenReportPage=0' }
     if (Test-Path "$t\W3CrashFix.crash.log") { throw 'test_diag: the crash log of an earlier version in the old place was not removed' }
+    # 1.6.2: the call stack. It starts at the crash address and names at least one caller in the stand-in game.
+    $csLine = ($cl -split "`r?`n" | Where-Object { $_ -like 'Call stack: *' } | Select-Object -First 1)
+    $crAt = [regex]::Match($cl, 'Crash: exception [^\r\n]* at (witcher3\.exe\+0x[0-9A-F]+)').Groups[1].Value
+    if (-not $csLine) { throw 'test_diag: the crash summary has no "Call stack:" line' }
+    if (-not $crAt -or -not $csLine.StartsWith("Call stack: $crAt")) { throw "test_diag: the call stack does not start at the crash address ($crAt): $csLine" }
+    if (([regex]::Matches($csLine, 'witcher3\.exe\+0x[0-9A-F]+')).Count -lt 2) { throw "test_diag: the call stack names no caller in the stand-in game: $csLine" }
+    if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('[CRASH] call stack: ')) { throw 'test_diag: the activity log lacks the call stack line' }
     if (@(Get-ChildItem "$t\W3CrashFix crash report").Count -ne 1) { throw 'test_diag: the crash log''s own folder must hold exactly one file' }
     # The report id: 16 hex digits, the same in the summary and in W3CrashFix.ini.
-    $rid = IniVal "$t\W3CrashFix.ini" 'ReportId'
-    if ($rid -notmatch '^[0-9A-F]{16}$') { throw "test_diag: W3CrashFix.ini does not hold a report id ('$rid')" }
+    # Test builds (-CrashTest) always use the fixed id 1337testlulz and write it to W3CrashFix.ini, note included.
+    # Nowhere in the mod's own texts may personalising the id be mentioned (only in W3CrashFix.ini).
+    foreach ($txt in @($cl, (Get-Content "$t\W3CrashFix.activity.log" -Raw), $rp)) {
+        if ($txt -match '(?i)personali[sz]') { throw 'test_diag: the log or the report page mentions personalising the report id' }
+    }
+    if ($CrashTest) {
+        $rid = '1337testlulz'
+        if ((IniVal "$t\W3CrashFix.ini" 'ReportId') -ne $rid) { throw 'test_diag: a test build did not write ReportId=1337testlulz into W3CrashFix.ini' }
+        if (-not (Get-Content "$t\W3CrashFix.ini" -Raw).Contains('; ReportId: ')) { throw 'test_diag: a test build did not add the note above the ReportId line' }
+    } else {
+        $rid = IniVal "$t\W3CrashFix.ini" 'ReportId'
+        if ($rid -notmatch '^[0-9A-F]{16}$') { throw "test_diag: W3CrashFix.ini does not hold a report id ('$rid')" }
+        # The note about personalising the id: only in W3CrashFix.ini, once, right above the ReportId line.
+        $iniText = Get-Content "$t\W3CrashFix.ini" -Raw
+        if (([regex]::Matches($iniText, '; ReportId: ')).Count -ne 1 -or $iniText -notmatch '(?s); Allowed: [^\r\n]*\r?\nReportId=') { throw 'test_diag: W3CrashFix.ini lacks the note above the ReportId line (or has it twice)' }
+    }
     if (-not $cl.Contains("Report id: $rid")) { throw 'test_diag: the crash summary does not show the report id from W3CrashFix.ini' }
     # The report page: one button, to the upload page; the folder link; nothing left of the two old buttons.
     foreach ($need in 'Send the crash log', 'u.pcloud.com/#/puplink?code=', 'A small folder window has opened in the lower right corner that holds only this file', "Copy the file's path", 'W3CrashFix crash report\W3CrashFix.crash.log" onclick="cp(this)"', 'Files are uploaded!', 'Why use my browser?', 'The mod itself never connects to the internet') {
@@ -135,17 +156,60 @@ if ($code -eq 0) {
     $mods = 'build\Mods'; $dlc = 'build\DLC'
     Remove-Item $mods, $dlc -Recurse -Force -ErrorAction SilentlyContinue
     foreach ($m in "$mods\mod0rt_shadow_fixes", "$mods\modSomethingElse", "$dlc\dlcMyAddon", "$dlc\dlc7", "$dlc\bob") { New-Item -ItemType Directory -Force $m | Out-Null }
+    # A long mod list (since 1.6.2): the crash summary must name every one of them, however long the list is
+    # (a 1.6.1 report was cut off at 600 characters). 150 long names make about 9 KB.
+    $many = 1..150 | ForEach-Object { 'modListTest{0:D3}_AVeryLongModFolderNameLikeRealOnes' -f $_ }
+    foreach ($m in $many) { New-Item -ItemType Directory -Force "$mods\$m" | Out-Null }
     Remove-Item $clf, "$t\W3CrashFix-report.html"
     & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" crash | Out-Null
     $global:LASTEXITCODE = 0
     $cl = if (Test-Path $clf) { Get-Content $clf -Raw } else { '' }
     if (-not (Test-Path "$t\W3CrashFix-report.html")) { throw 'test_diag: no report page was made although in-game mods must not switch reporting off' }
-    foreach ($need in 'mod0rt_shadow_fixes', 'modSomethingElse', 'dlcMyAddon', "Report id: $rid", 'mods: in-game mods found:') {
+    foreach ($need in 'mod0rt_shadow_fixes', 'modSomethingElse', 'dlcMyAddon', "Report id: $rid", 'mods: in-game mods found (153): ', 'shortened here; a crash report lists all of them') {
         if (-not $cl.Contains($need)) { throw "test_diag: with in-game mods, the crash log lacks '$need'" }
     }
-    $modLine = ($cl -split "`r?`n" | Where-Object { $_ -like 'In-game mods:*' } | Select-Object -First 1)
+    $modLine = ($cl -split "`r?`n" | Where-Object { $_ -like 'In-game mods*' } | Select-Object -First 1)
+    if ($modLine -notlike 'In-game mods (153): *') { throw "test_diag: the summary's mods line does not start with 'In-game mods (153): '" }
     if ($modLine -match 'dlc7|bob') { throw "test_diag: the game's own add-on folders were named as mods ($modLine)" }
+    foreach ($need in @('mod0rt_shadow_fixes', 'modSomethingElse', 'dlcMyAddon') + $many) {
+        if (-not $modLine.Contains($need)) { throw "test_diag: the summary's mods line lacks '$need' (the list must be complete)" }
+    }
+    if ($modLine.Contains('...') -or $modLine.Contains('more (too many')) { throw 'test_diag: the summary cut the mods list short' }
     Remove-Item $mods, $dlc -Recurse -Force
+    # A personalised report id (since 1.6.2): kept as the user wrote it. One with characters that are not allowed is
+    # replaced by a new random id. Release builds only: test builds always use 1337testlulz.
+    if (-not $CrashTest) {
+        # Text before or after the id is kept (Onno, 18 Nov 2026). A completely own id is shelved for 1.7.0, and text in
+        # the middle breaks the id: both replaced, like too long or other characters.
+        $mid = $rid.Substring(0, 8) + 'HAVOC' + $rid.Substring(8)
+        foreach ($case in @(@("Havoc_$rid", "Havoc_$rid"), @("$($rid)havoc", "$($rid)havoc"), @('Geralt_of_Rivia-1272', $null), @($mid, $null),
+                            @('bad id!', $null), @('Geralt1272', $null), @(('x' * 41), $null),
+                            @('Havoc_1337TestLulz_abc', $null))) {   # the test builds' id is reserved, in any case
+            $ini = Get-Content "$t\W3CrashFix.ini" -Raw
+            Set-Content "$t\W3CrashFix.ini" ($ini -replace '(?m)^ReportId=.*$', "ReportId=$($case[0])") -Encoding ascii -NoNewline
+            Remove-Item $clf, "$t\W3CrashFix-report.html" -ErrorAction SilentlyContinue
+            & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" crash | Out-Null
+            $global:LASTEXITCODE = 0
+            $cl = if (Test-Path $clf) { Get-Content $clf -Raw } else { '' }
+            $now = IniVal "$t\W3CrashFix.ini" 'ReportId'
+            if ($case[1]) {
+                if ($now -ne $case[1] -or -not $cl.Contains("Report id: $($case[1])")) { throw "test_diag: the personalised report id '$($case[1])' was not kept (ini: '$now')" }
+            } elseif ($now -notmatch '^[0-9A-F]{16}$' -or -not $cl.Contains("Report id: $now")) { throw "test_diag: the invalid report id was not replaced by a new random one (ini: '$now')" }
+        }
+        # A refused id is reported in W3CrashFix.ini, once, right above ReportId=, with the new id and without a
+        # reason (Onno: "notified that their id is invalid ... without revealing the reason"). It stays while the id
+        # is the one the mod made, and goes once the user sets a usable id of their own.
+        $iniText = Get-Content "$t\W3CrashFix.ini" -Raw; $now = IniVal "$t\W3CrashFix.ini" 'ReportId'
+        $notice = "; The ReportId you entered (Havoc_1337TestLulz_abc) can't be used, so a new random id was made: $now"
+        if (([regex]::Matches($iniText, '; The ReportId you entered')).Count -ne 1 -or -not $iniText.Contains("$notice`r`nReportId=")) { throw 'test_diag: the refused report id is not reported in W3CrashFix.ini as expected' }
+        foreach ($txt in @($iniText, (Get-Content "$t\W3CrashFix.activity.log" -Raw))) { if ($txt -match '(?i)reserved|test build') { throw 'test_diag: the reason for refusing the report id is given away' } }
+        & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" heap | Out-Null; $global:LASTEXITCODE = 0
+        if (-not (Get-Content "$t\W3CrashFix.ini" -Raw).Contains($notice)) { throw 'test_diag: the notice went away although the id is still the one the mod made' }
+        $iniText = Get-Content "$t\W3CrashFix.ini" -Raw
+        Set-Content "$t\W3CrashFix.ini" ($iniText -replace '(?m)^ReportId=.*$', "ReportId=Havoc_$now") -Encoding ascii -NoNewline
+        & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" heap | Out-Null; $global:LASTEXITCODE = 0
+        if ((Get-Content "$t\W3CrashFix.ini" -Raw).Contains('; The ReportId you entered')) { throw 'test_diag: the notice stayed after the user set a usable id' }
+    }
     Remove-Item "$t\W3CrashFix.ini"
     # License dialog (the variant in build\license): without an acceptance in W3CrashFix.ini the mod asks. The test program presses the buttons
     # itself, so two dialogs flash by. OK must store the acceptance; OK + "I decline" must rename the mod's file and remove the settings.
@@ -192,6 +256,24 @@ if ($code -eq 0) {
     'Test passed: diagnostic, caller names, crash report, report id, in-game mods, settings file and license dialog'
 } elseif ($code -eq 3) { 'Test passed: diagnostic (no D3D12 device here, caller names not tested)' }
 else { throw "test_diag exited with $code`: $out" }
+
+# Uninstall leaves no traces (Onno, 18 Nov 2026: "no traces should be left behind"): in a stand-in game folder with
+# every file the mod and the installer can leave in bin\x64_dx12, "--uninstall" must leave only the game's own file.
+$u = 'build\test\uninstall'; $ub = "$u\bin\x64_dx12"
+Remove-Item $u -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force "$ub\W3CrashFix crash report" | Out-Null
+Copy-Item "$t\witcher3.exe" $ub
+Copy-Item build\W3CrashFix.asi "$ub\W3CrashFix.asi"; Copy-Item build\W3CrashFix.asi "$ub\W3CrashFix.removed"
+foreach ($n in 'W3CrashFix.ini', 'W3CrashFix.accepted', 'W3CrashFix.id', 'W3CrashFix.noreport', 'W3CrashFix-report.html', 'W3CrashFix.crash.log',
+               'W3CrashFix crash report\W3CrashFix.crash.log', 'W3CrashFix.activity.log', 'W3CrashFix.activity.previous.log', 'W3CrashFix.log', 'W3CrashFix.previous.log') {
+    Set-Content "$ub\$n" 'x' -Encoding ascii
+}
+$p = Start-Process build\W3CrashFix-Installer.exe -ArgumentList '--uninstall', "`"$PWD\$u`"" -Wait -PassThru -WindowStyle Hidden
+if ($p.ExitCode) { throw "uninstall test: the installer's --uninstall failed (exit $($p.ExitCode))" }
+$left = @(Get-ChildItem $ub -Force | Where-Object { $_.Name -ne 'witcher3.exe' } | ForEach-Object Name)
+if ($left.Count) { throw "uninstall test: Uninstall left traces behind: $($left -join ', ')" }
+Remove-Item $u -Recurse -Force
+'Test passed: Uninstall leaves no traces'
 
 # The windows after a crash, outside the game (see -WindowTest at the top). The stand-in game crashes while one of its
 # own windows is frozen; the mod must open the folder window and the report page and then let the program end. If the

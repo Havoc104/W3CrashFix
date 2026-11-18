@@ -12,6 +12,8 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 |---|---|
 | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
 
+**Video (3 minutes):** [how the crash works, and the fix](https://youtu.be/0h5bh2ZFebU).
+
 **Results on the author's PC (see "Tested with" below for the full setup):**
 - **Before:** over 30 crashes, all at `+0x280ad3d`.
 - **With the fix:** the live heap count stays flat at 7–9 heaps instead of climbing to about 4,000. Many hours of play, including the spots that used to crash every time, heavy fast travel and combat: no crashes.
@@ -20,7 +22,7 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.activity.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.6.1-5.0.16` is mod version 1.6.1 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.7.0-5.0.16` is mod version 1.7.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -55,7 +57,7 @@ It works alongside your other ASI mods.
 
 ### B. Standalone (`dinput8.dll`)
 
-Use this if you don't want to install Ultimate ASI Loader. It can't be used if another mod already uses `dinput8.dll`.
+Use this if you don't want to install Ultimate ASI Loader. The folder can hold only one `dinput8.dll`: if another mod already uses `dinput8.dll` (Ultimate ASI Loader, for example), this one replaces it and that mod stops working, and a mod that puts its own `dinput8.dll` there later switches W3CrashFix off in the same way. If another mod uses `dinput8.dll`, choose the ASI version.
 
 1. Copy `bin\x64_dx12\dinput8.dll` from the zip into `<game folder>\bin\x64_dx12\`.
 
@@ -70,7 +72,7 @@ A small program that installs either version for you and can remove it again. Th
 3. Choose a version and click **Install**. The installer shows the license first; see [The license window](#the-license-window). You can use **Uninstall** later to remove the mod.
 4. **Run game** starts the game once W3CrashFix is installed. A Steam copy is started through Steam. If the ASI version is installed without Ultimate ASI Loader, the installer first reminds you that other ASI loaders are untested and not supported.
 
-**Uninstall** leaves a clean folder: besides the mod's own file it removes `W3CrashFix.ini` (the mod's settings: your license acceptance and the report id) and `W3CrashFix.removed` (left after declining), as well as the crash log with its folder and the report page, if a crash left them. The activity logs stay.
+**Uninstall** leaves a clean folder: besides the mod's own file it removes `W3CrashFix.ini` (the mod's settings: your license acceptance and the report id) and `W3CrashFix.removed` (left after declining), as well as the crash log with its folder, the report page and the activity logs. It leaves no traces of the mod behind.
 
 The installer checks your game version and won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that Ultimate ASI Loader is installed. If it isn't found, it links you to it. Ultimate ASI Loader is a separate project and isn't included. Without it the installer warns you and asks before it installs the ASI version, so you can still try another ASI loader at your own risk.
 
@@ -83,7 +85,7 @@ ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use du
 Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 1.6.1-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.7.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -139,7 +141,7 @@ The mod notices a crash and helps you report it:
 
 **What a report contains.** The crash log holds the summary and the mod's activity log of the crashed session: technical data. It can include the folder the game is installed in and the folder names of your in-game mods (see [Other mods](#other-mods)). Only the author can see uploaded files. A report sent this way can't be answered; for questions, use the Posts tab on Nexus Mods or the issues here on GitHub.
 
-**The report id** is a random number made on your PC the first time the mod works. Its only use is that several reports from the same installation can be recognised as such. It is not derived from your hardware, Windows or your name, and it says nothing about you. It is kept as `ReportId` in `W3CrashFix.ini`; remove that line to get a new one.
+**The report id** is a random number made on your PC the first time the mod works. Its only use is that several reports from the same machine/installation can be recognised as such. It is not derived from your hardware, Windows or your name, and it says nothing about you. It is kept as `ReportId` in `W3CrashFix.ini`; remove that line to get a new one.
 
 **Crashes with another cause are welcome too.** The crash log is made for every crash, not only for the one W3CrashFix fixes. Such reports might be analysed in an attempt to provide a fix. That is not a promise.
 
@@ -149,7 +151,7 @@ If you don't want anything to open after a crash, set `OpenReportPage=0` in `W3C
 
 ### Uninstall
 
-Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`. You can also delete `W3CrashFix.ini` and, if they exist, `W3CrashFix.removed`, `W3CrashFix-report.html` and the folder `W3CrashFix crash report`.
+Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`. You can also delete `W3CrashFix.ini` and, if they exist, `W3CrashFix.removed`, `W3CrashFix-report.html`, `W3CrashFix.activity.log`, `W3CrashFix.activity.previous.log` and the folder `W3CrashFix crash report`. The installer's Uninstall removes all of these, so no traces of the mod are left.
 
 ## Technical details
 
@@ -167,6 +169,23 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 **The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
 
 ## Changelog
+
+### 1.7.0-5.0.16
+
+Thanks to everyone who sent a crash log. The first logs that came in through the report page already led to this release: they showed where the crash report could tell more. So far seven crash reports from six players have arrived. None of them was the crash this fix is made for, and every one of them helped.
+
+- Crash report: it now lists **all** your in-game mods, with their number. Before, a long list was cut off after about 600 characters, so with many mods it didn't show which ones were enabled.
+- Crash report: it now also shows the **call stack**, a short list of places in the game's code that led to the crash. Two players' crashes stopped at the same place, where the game halts itself when something goes wrong; only the code that led there can show what went wrong.
+- Crash report: the verdict also recognises the descriptor heap crash when it shows up one step deeper in the game's code.
+- You can now **personalise your report id**. `W3CrashFix.ini` explains how, right above the `ReportId` line: add your own text before or after the id, for example `MyName_5E19AF37C0802875`, and keep the 16 characters of the id itself, so your new crash logs can still be matched with the ones you sent before. Before this release, the mod replaced any id it didn't make itself with a new random one.
+- Installer: **Uninstall leaves no traces**: it now also removes the activity logs.
+- After a crash, the small folder window gets a little more time and up to four requests to stay on top of the browser. Windows can still refuse it, but less often.
+- Clearer wording about the standalone version: only one `dinput8.dll` can be in the folder.
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** The fix itself is the same, so if your game runs fine, you can keep your version. But if you ever send a crash log, a report from 1.7.0 tells much more. Every log counts, also when it isn't the crash this mod fixes: send it with the button on the report page.
+
+**Video:** [how the crash works, and the fix](https://youtu.be/0h5bh2ZFebU) (3 minutes).
 
 ### 1.6.1-5.0.16
 
@@ -256,7 +275,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 and 1.7.0 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
 
 ## Support
 

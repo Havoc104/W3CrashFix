@@ -424,12 +424,12 @@ static void install_fix(void) {
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 #define RVA_CRASH 0x280ad3d
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.6.1-5.0.16"
+#define W3CF_VERSION "1.7.0-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[128] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
 static volatile LONG g_crashed, g_noticed;
-static char g_crSum[3072], g_crEsc[6144], g_crBuf[65536];
+static char g_crSum[4096], g_crEsc[6144], g_crBuf[65536];
 
 static const char *exc_name(DWORD c) {
     switch (c) {
@@ -481,6 +481,36 @@ static void fmt_regs(const CONTEXT *c) {
         if (v[i] >= lo && v[i] < hi) n += snprintf(g_crRegs + n, sizeof g_crRegs - n, "%s=w3+0x%llX ", nm[i], (unsigned long long)(v[i] - lo));
         else n += snprintf(g_crRegs + n, sizeof g_crRegs - n, "%s=0x%llX ", nm[i], (unsigned long long)v[i]);
     }
+}
+
+// The call stack (since 1.6.2): how the game got to the crash. The first entry is the crash address itself, every next
+// one the place that called the one before (a return address), as file+0xOFFSET. It is found by unwinding from the
+// registers of the crash with the unwind data every 64-bit Windows program carries; nothing is loaded and nothing is
+// written but this text. Many crashes stop in a small helper that many places use (for example the game's own "stop
+// here" when a check fails), and only the callers show which of those places it was. Safety on the crash path: at
+// most 16 steps, no heap, no waiting, and the stack pointer must stay inside this thread's own stack at every step;
+// on any doubt the walk stops and the summary shows what was found so far.
+static char g_crStack[900];
+static DWORD64 g_crFrames[16]; static int g_crNFrames;   // the same addresses as numbers, for the verdict
+static void fmt_stack(const CONTEXT *start) {
+    CONTEXT c = *start;
+    NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
+    DWORD64 lo = (DWORD64)(ULONG_PTR)tib->StackLimit, hi = (DWORD64)(ULONG_PTR)tib->StackBase;
+    int n = 0;
+    g_crStack[0] = 0;
+    g_crNFrames = 0;
+    for (int i = 0; i < 16 && c.Rip && n < (int)sizeof g_crStack - 80; i++) {
+        g_crFrames[g_crNFrames++] = c.Rip;
+        char at[192]; where((void *)(ULONG_PTR)c.Rip, at, sizeof at);
+        n += snprintf(g_crStack + n, sizeof g_crStack - n, "%s%s", i ? " < " : "", at);
+        if (c.Rsp < lo || c.Rsp + 8 > hi || (c.Rsp & 7)) break;
+        DWORD64 imageBase = 0;
+        PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(c.Rip, &imageBase, NULL);
+        if (rf) { PVOID hd; DWORD64 est; RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, rf, &c, &hd, &est, NULL); }
+        else { c.Rip = *(DWORD64 *)(ULONG_PTR)c.Rsp; c.Rsp += 8; }   // no unwind data (a leaf function): the return address is on top
+        if (c.Rsp < lo || c.Rsp > hi) break;
+    }
+    if (!g_crStack[0]) lstrcpyA(g_crStack, "not available");
 }
 
 // ---------------------------------------------------------------- settings: W3CrashFix.ini
@@ -551,8 +581,12 @@ static void load_settings(void) {
 // them: one line in the activity log, and the line "In-game mods:" in the crash summary, so that whoever reads a
 // crash report can see which in-game mods were enabled and can rule them in or out. Nothing is switched off
 // because of a mod, and no mod is treated differently from another.
-static char g_modNames[600] = "none";
-static int g_modsFound;
+// Since 1.6.2 the crash summary lists ALL of them, with their number (Onno, 18 Nov 2026, after a report with a
+// long mod list was cut off at 600 characters: "we need to list them all"). 64 KB holds thousands of folder names;
+// only beyond that the summary says how many more there were. The activity log line stays short.
+static char g_modNames[65536] = "none";
+static size_t g_modLen;
+static int g_modsFound, g_modsLeftOut;
 
 static int own_dlc(const char *n) {      // the game's own add-on folders, if a copy of the game keeps them there
     if (!lstrcmpiA(n, "bob") || !lstrcmpiA(n, "ep1")) return 1;
@@ -571,9 +605,10 @@ static void scan_mod_folder(const wchar_t *root, const wchar_t *sub, const wchar
         char n8[200];
         if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, n8, sizeof n8, NULL, NULL)) lstrcpyA(n8, "(long name)");
         if (dlc && own_dlc(n8)) continue;
-        size_t len = g_modsFound ? strlen(g_modNames) : 0;
-        if (len + strlen(n8) + 12 < sizeof g_modNames) snprintf(g_modNames + len, sizeof g_modNames - len, "%s%s", len ? ", " : "", n8);
-        else if (len + 6 < sizeof g_modNames && strcmp(g_modNames + len - 5, ", ...")) lstrcatA(g_modNames, ", ...");
+        if (g_modLen + strlen(n8) + 3 < sizeof g_modNames) {
+            snprintf(g_modNames + g_modLen, sizeof g_modNames - g_modLen, "%s%s", g_modLen ? ", " : "", n8);
+            g_modLen += strlen(g_modNames + g_modLen);
+        } else g_modsLeftOut++;
         g_modsFound++;
     } while (FindNextFileW(h, &fd));
     FindClose(h);
@@ -585,20 +620,142 @@ static void scan_mods(void) {
     lstrcatW(root, L"\\");
     scan_mod_folder(root, L"Mods", L"mod*", 0);
     scan_mod_folder(root, L"DLC", L"*", 1);
-    if (!g_modsFound) logf("mods: no in-game mods found");
-    else logf("mods: in-game mods found: %s (a crash report would name them)", g_modNames);
+    if (!g_modsFound) { logf("mods: no in-game mods found"); return; }
+    // The log line shows at most about 600 characters of the list, cut after a whole name.
+    char shortList[640]; size_t n = g_modLen; int cut = g_modsLeftOut > 0;
+    if (n > 600) { n = 600; while (n && (g_modNames[n] != ',' || g_modNames[n + 1] != ' ')) n--; cut = 1; }
+    memcpy(shortList, g_modNames, n); shortList[n] = 0;
+    logf("mods: in-game mods found (%d): %s%s", g_modsFound, shortList,
+         cut ? ", ... (shortened here; a crash report lists all of them)" : "");
 }
 
 // The report id: a random number made on this PC the first time the mod works, kept as ReportId in W3CrashFix.ini
-// and shown in the crash summary. Its only use: several crash reports from the same installation can be recognised
+// and shown in the crash summary. Its only use: several crash reports from the same machine/installation can be recognised
 // as such. It is not derived from the hardware, Windows or the user's name; removing the line gives a new one, and
 // Uninstall and a declined license remove the whole file.
-static char g_reportId[20] = "none";
+// Since 1.7.0 users may personalise it (Onno, 18 Nov 2026): their own text before or after the 16 characters of the
+// id ("Havoc_5E19AF37C0802875", "5E19AF37C0802875havoc"), so the original id stays intact and new logs can still be
+// matched with logs sent before the change. The id is kept as written in W3CrashFix.ini if it is at most 40 letters,
+// digits, '_' and '-' with 16 hex digits in a row among them. A completely own id is shelved for now. Anything else
+// is replaced by a new random id; the log says only that it was not usable, and a line in the ini says so too.
+static char g_reportId[48] = "none";
+// The only place that tells users they may personalise the id (Onno, 18 Nov 2026: "it should not be mentioned in the
+// mod itself, including the installer. but it should be mentioned in the ini file"): a note of comment lines right
+// above the ReportId line in W3CrashFix.ini. Windows' own ini functions skip lines that begin with ';' and keep them
+// when they change a value. Added once, at game start (never on the crash path); a file in another encoding than
+// the plain one Windows writes is left alone.
+static const char g_idNote[] =
+    "; ReportId: lets the mod's author recognise several crash reports from this machine/installation.\r\n"
+    "; You may personalise it: add your own text before or after the id, for example MyName_5E19AF37C0802875.\r\n"
+    "; Keep the 16 characters of the id itself, then your new crash logs can still be matched with the ones you sent before.\r\n"
+    "; Allowed: letters, digits, _ and -, 40 characters at most. Anything else is replaced by a new random id.\r\n";
+// A one-line notice right above the ReportId line when the id the user wrote there could not be used (Onno, 18 Nov
+// 2026: "the user should be notified that their id is invalid ... without revealing the reason"). It names the id
+// that was refused, never the reason. An older notice is removed first; with notice NULL only that happens (used
+// when the id is fine again). Same rules as the note: game start only, plain encoding only.
+static const char g_idNoticePrefix[] = "; The ReportId you entered";
+static void ini_set_id_notice(const char *refused) {
+    static char buf[16384], out[16384 + 256];
+    HANDLE f = CreateFileW(g_ini, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!ok || got >= sizeof buf - 1 || (got >= 2 && (unsigned char)buf[0] == 0xFF && (unsigned char)buf[1] == 0xFE)) return;
+    buf[got] = 0;
+    char *old = strstr(buf, g_idNoticePrefix);
+    if (!refused && !old) return;                                    // nothing to remove
+    if (!refused) {                                                  // keep it while the id is still the one made then
+        char *eol = strchr(old, '\n'); size_t ol = eol ? (size_t)(eol - old) : strlen(old);
+        char tmp[256]; if (ol >= sizeof tmp) ol = sizeof tmp - 1; memcpy(tmp, old, ol); tmp[ol] = 0;
+        if (strstr(tmp, g_reportId)) return;
+    }
+    size_t o = 0; int placed = 0;
+    for (char *line = buf; *line; ) {
+        char *end = strchr(line, '\n'); size_t len = end ? (size_t)(end - line + 1) : strlen(line);
+        if (!strncmp(line, g_idNoticePrefix, sizeof g_idNoticePrefix - 1)) { line += len; continue; }   // drop the old notice
+        if (refused && !placed && !strncmp(line, "ReportId=", 9)) {
+            char clean[64]; int k = 0;                               // the refused id, printable characters only
+            for (const char *c = refused; *c && k < 60; c++) if ((unsigned char)*c >= 32 && *c != 127) clean[k++] = *c;
+            clean[k] = 0;
+            o += snprintf(out + o, sizeof out - o, "%s (%s) can't be used, so a new random id was made: %s\r\n", g_idNoticePrefix, clean, g_reportId);
+            placed = 1;
+        }
+        if (o + len >= sizeof out) return;
+        memcpy(out + o, line, len); o += len;
+        line += len;
+    }
+    f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w; WriteFile(f, out, (DWORD)o, &w, NULL);
+    CloseHandle(f);
+}
+static void ini_note_report_id(void) {
+    static char buf[16384];
+    HANDLE f = CreateFileW(g_ini, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!ok || got >= sizeof buf - 1 || (got >= 2 && (unsigned char)buf[0] == 0xFF && (unsigned char)buf[1] == 0xFE)) return;
+    buf[got] = 0;
+    if (strstr(buf, "; ReportId: ")) return;                        // the note is there already
+    char *at = strstr(buf, "\nReportId=");
+    if (at) at++; else if (!strncmp(buf, "ReportId=", 9)) at = buf; else return;
+    f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w;
+    WriteFile(f, buf, (DWORD)(at - buf), &w, NULL);
+    WriteFile(f, g_idNote, sizeof g_idNote - 1, &w, NULL);
+    WriteFile(f, at, (DWORD)strlen(at), &w, NULL);
+    CloseHandle(f);
+}
+static int report_id_ok(const char *s, int *hex16) {
+    // 1.7.0: own text only before or after the 16 characters of the id, which must stay unbroken (16 hex digits in a
+    // row). A completely own id is shelved (Onno, 18 Nov 2026: "don't include this option in 1.7.0").
+    size_t n = strlen(s); int hex = n == 16, run = 0, longest = 0;
+    if (n < 16 || n > 40) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '-')) return 0;
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) { if (++run > longest) longest = run; }
+        else { run = 0; hex = 0; }
+    }
+    if (longest < 16) return 0;
+    *hex16 = hex;
+    // The test builds' id is reserved (Onno, 18 Nov 2026: "another user can never use 1337testlulz in their custom
+    // id"), in any mix of capitals and small letters, so a player's report can never be taken for a test build's.
+    static const char reserved[] = "1337testlulz";
+    for (size_t i = 0; i + sizeof reserved - 1 <= n; i++)
+        if (!_strnicmp(s + i, reserved, sizeof reserved - 1)) return 0;
+    return 1;
+}
 static void load_report_id(void) {
+#ifdef W3_CRASHTEST
+    // Test builds always use the same id (Onno, 18 Nov 2026: "in test builds, my report id should always be:
+    // 1337testlulz"), so a crash report from a test build can never be taken for one of a released version. It is
+    // also written to W3CrashFix.ini, with the note above it (Onno: "my ini doesn't show my test id"). That is safe:
+    // with its 12 characters it is too short for a released version (16 at least), which therefore replaces it
+    // with a new random id of its own.
+    lstrcpyA(g_reportId, "1337testlulz");
+    ini_set(L"ReportId", g_reportId);
+    ini_note_report_id();
+    logf("report id: %s (fixed in TEST BUILDS, written to W3CrashFix.ini)", g_reportId);
+    return;
+#endif
     char buf[64]; ini_get(L"ReportId", buf, sizeof buf);
-    int ok = strlen(buf) == 16;
-    for (int i = 0; ok && i < 16; i++) ok = (buf[i] >= '0' && buf[i] <= '9') || (buf[i] >= 'A' && buf[i] <= 'F');
-    if (ok) { memcpy(g_reportId, buf, 17); logf("report id: %s (random, from W3CrashFix.ini)", g_reportId); return; }
+    int hex16 = 0;
+    if (report_id_ok(buf, &hex16)) {
+        lstrcpyA(g_reportId, buf);
+        // The mod itself (its log, the report page, the installer) never mentions that the id can be personalised
+        // (Onno, 18 Nov 2026); only the note in W3CrashFix.ini does, see ini_note_report_id().
+        (void)hex16;
+        logf("report id: %s (from W3CrashFix.ini)", g_reportId);
+        ini_note_report_id();
+        ini_set_id_notice(NULL);       // an old "can't be used" notice goes once the user has set an id of their own
+        return;
+    }
+    if (buf[0]) logf("report id: the ReportId in W3CrashFix.ini is not usable, so a new random one is made");
     LARGE_INTEGER q; FILETIME ft; QueryPerformanceCounter(&q); GetSystemTimeAsFileTime(&ft);
     unsigned long long x = (unsigned long long)q.QuadPart ^ (((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
     x ^= ((unsigned long long)GetCurrentProcessId() << 32) ^ ((unsigned long long)GetCurrentThreadId() << 13) ^ (unsigned long long)(ULONG_PTR)&x;
@@ -606,7 +763,11 @@ static void load_report_id(void) {
         x += 0x9E3779B97F4A7C15ULL; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL; x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL; x ^= x >> 31;
     }
     snprintf(g_reportId, sizeof g_reportId, "%016llX", x);
-    if (ini_set(L"ReportId", g_reportId)) logf("report id: %s (random, newly made and saved in W3CrashFix.ini; remove the ReportId line there to get a new one)", g_reportId);
+    if (ini_set(L"ReportId", g_reportId)) {
+        logf("report id: %s (random, newly made and saved in W3CrashFix.ini; remove the ReportId line there to get a new one)", g_reportId);
+        ini_note_report_id();
+        if (buf[0]) ini_set_id_notice(buf);   // tell the user in the ini that their id was refused (no reason given)
+    }
     else logf("report id: %s (random; W3CrashFix.ini could not be written, error %lu, so the next session gets another one)", g_reportId, GetLastError());
 }
 
@@ -721,15 +882,26 @@ static DWORD WINAPI report_windows(LPVOID unused) {
             if (cx > ww) cx = ww;
             if (cy > wh) cy = wh;
             if (IsZoomed(fw) || IsIconic(fw)) ShowWindowAsync(fw, SW_RESTORE);
-            // HWND_TOPMOST = "always on top"; asynchronous, so the mod never waits for Explorer (rule 2 above)
-            SetWindowPos(fw, HWND_TOPMOST, mi.rcWork.right - cx - 16, mi.rcWork.bottom - cy - 16, cx, cy, SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
-            Sleep(500);                                  // let Explorer finish bringing it forward, then look
-            // GetWindowLongW only reads the window's style; it does not send a message, so it cannot wait either
-            int onTop = IsWindow(fw) && (GetWindowLongW(fw, GWL_EXSTYLE) & WS_EX_TOPMOST);
-            logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (%s found after %lu ms, %d such window(s) were open before; made small, lower right; in front of the browser: %s, checked; always on top: %s, checked)",
+            // Since 1.6.2 (Onno, 18 Nov 2026: "can you change the timing a bit to reduce the chances of this not
+            // working?"): test38 found the new folder window only 1.4 s after the browser had become active, asked at
+            // once, and Windows did not keep it on top; test35, where everything happened later, got YES. So the mod
+            // first gives Explorer 400 ms to finish opening the window, and if Windows has not made it "always on
+            // top" half a second after the request, asks again, up to 4 times (at most about 3.5 s in all, well
+            // within the 12 s the crash path waits for this thread).
+            Sleep(400);
+            int onTop = 0, tries = 0;
+            while (!onTop && tries < 4 && IsWindow(fw)) {
+                tries++;
+                // HWND_TOPMOST = "always on top"; asynchronous, so the mod never waits for Explorer (rule 2 above)
+                SetWindowPos(fw, HWND_TOPMOST, mi.rcWork.right - cx - 16, mi.rcWork.bottom - cy - 16, cx, cy, SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                Sleep(500);                              // let Explorer carry it out, then look
+                // GetWindowLongW only reads the window's style; it does not send a message, so it cannot wait either
+                onTop = IsWindow(fw) && (GetWindowLongW(fw, GWL_EXSTYLE) & WS_EX_TOPMOST);
+            }
+            logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (%s found after %lu ms, %d such window(s) were open before; made small, lower right; in front of the browser: %s, checked; always on top: %s, checked, asked %d time(s))",
                  reused ? "an already open window" : "new window", GetTickCount() - t0, fs.nOld,
                  !bw ? "no browser window to compare with" : (IsWindow(fw) && folder_in_front(fw, bw) ? "YES" : "NO"),
-                 onTop ? "YES" : "NO (Windows did not allow it)");
+                 onTop ? "YES" : "NO (Windows did not allow it)", tries);
         } else logf("crash report: opened the folder \"" W3CF_REPORT_DIR "\" with W3CrashFix.crash.log highlighted (its window was not found in time, so it keeps Explorer's own size and place)");
     } else logf("crash report: the folder window could not be opened (%lu)", GetLastError());
     return 0;
@@ -747,38 +919,60 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     logf("!!!! CRASH: exception 0x%08lX (%s%s) at %s", (unsigned long)code, exc_name(code), detail, at);
     if (code == EXCEPTION_STACK_OVERFLOW) return;        // almost no stack left: the log line is all we can do
     summary("CRASH");
-    if (ep->ContextRecord) { fmt_regs(ep->ContextRecord); logf("[CRASH] registers: %s", g_crRegs); }
-    else lstrcpyA(g_crRegs, "not available");
+    if (ep->ContextRecord) {
+        fmt_regs(ep->ContextRecord); logf("[CRASH] registers: %s", g_crRegs);
+        fmt_stack(ep->ContextRecord); logf("[CRASH] call stack: %s", g_crStack);
+    } else { lstrcpyA(g_crRegs, "not available"); lstrcpyA(g_crStack, "not available"); }
 
     long long rva = g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
+    // Since 1.6.2 the verdict also looks at the call stack (Onno, 18 Nov 2026, after a test where the empty page was
+    // used one call deeper, at witcher3.exe+0x2809364, called from +0x280AD2E). The same crash, an empty page read
+    // through a NULL pointer, then shows up in a function that the crash function called. It counts as the
+    // descriptor heap crash when the exception is a read near address 0 and one of the next three entries of the
+    // call stack lies in the function that holds witcher3.exe+0x280AD3D (found with the game's own unwind data).
+    int deeper = 0;
+    if (g_buildOk && g_base && rva != RVA_CRASH && code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2 &&
+        er->ExceptionInformation[0] == 0 && er->ExceptionInformation[1] < 0x10000) {
+        DWORD64 ib = 0;
+        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry((DWORD64)(ULONG_PTR)(g_base + RVA_CRASH), &ib, NULL);
+        if (fn && ib == (DWORD64)(ULONG_PTR)g_base)
+            for (int i = 1; i < g_crNFrames && i <= 3 && !deeper; i++) {
+                DWORD64 r = g_crFrames[i] - ib;
+                if (g_crFrames[i] > ib && r > fn->BeginAddress && r <= fn->EndAddress) deeper = 1;
+            }
+    }
     const char *verdict =
         !g_buildOk ? "W3CrashFix does not support this build of the game, so it cannot tell which crash this is."
-        : rva != RVA_CRASH ? "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x280AD3D). Something else crashed the game."
-        : g_fixActive ? "This is the descriptor heap crash that W3CrashFix is made for, although the fix was active. That should not happen: please report it."
-        : "This is the descriptor heap crash that W3CrashFix is made for. The fix was not active in this session.";
+        : rva != RVA_CRASH && !deeper ? "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x280AD3D). Something else crashed the game."
+        : g_fixActive ? (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack), although the fix was active. That should not happen: please report it."
+                                : "This is the descriptor heap crash that W3CrashFix is made for, although the fix was active. That should not happen: please report it.")
+        : (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack). The fix was not active in this session."
+                  : "This is the descriptor heap crash that W3CrashFix is made for. The fix was not active in this session.");
     const char *test = "";
 #ifdef W3_CRASHTEST
     if (g_testCrash) test = "Note: this crash was triggered on purpose with a test key of this TEST BUILD.\r\n";
 #endif
     // The summary has to be useful on its own: many reports arrive without the log file attached.
     char mem[256]; vram(mem, sizeof mem);
+    // The summary is written in three parts: the lines above the mods, the mods list (which can be long, see
+    // g_modNames), and the lines below it.
+    char head[384], mods[96];
+    snprintf(head, sizeof head, "W3CrashFix crash report\r\nMod: %s (%s)\r\nReport id: %s\r\n", "W3CrashFix " W3CF_VERSION, g_flavor, g_reportId);
+    if (g_modsFound) snprintf(mods, sizeof mods, "In-game mods (%d): ", g_modsFound); else lstrcpyA(mods, "In-game mods: ");
     snprintf(g_crSum, sizeof g_crSum,
-             "W3CrashFix crash report\r\n"
-             "Mod: %s (%s)\r\n"
-             "Report id: %s\r\n"
-             "In-game mods: %s\r\n"
              "Game build supported: %s\r\n"
              "Fix active: %s\r\n"
              "Crash: exception 0x%08lX (%s%s) at %s\r\n"
              "Registers: %s\r\n"
+             "Call stack: %s\r\n"
              "Session length: %lu min\r\n"
              "Graphics card: %s\r\n"
              "Descriptor heaps: %lld live + %lld sampler (peak %lld + %lld), %lld failed creations\r\n"
              "Fix: %lld pages rescued, %lld retired normally\r\n"
              "Memory: %s\r\n"
              "Verdict: %s\r\n%s",
-             "W3CrashFix " W3CF_VERSION, g_flavor, g_reportId, g_modNames, g_buildOk ? "yes" : "no", g_fixActive ? "yes" : "no",
-             (unsigned long)code, exc_name(code), detail, at, g_crRegs,
+             g_buildOk ? "yes" : "no", g_fixActive ? "yes" : "no",
+             (unsigned long)code, exc_name(code), detail, at, g_crRegs, g_crStack,
              (unsigned long)((GetTickCount() - g_t0) / 60000), g_adapterName,
              g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
              (long long)g_rescued, (long long)g_retiredNormal, mem, verdict, test);
@@ -793,7 +987,9 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     DeleteFileW(src);                                               // a crash log of an earlier version, in the old place
     HANDLE f = create_in_dir(W3CF_REPORT_DIR_W L"\\W3CrashFix.crash.log", path);
     if (f != INVALID_HANDLE_VALUE) {
-        put(f, g_crSum); put(f, "\r\n---------------- full log of the crashed session ----------------\r\n");
+        put(f, head); put(f, mods); put(f, g_modNames);
+        if (g_modsLeftOut) { char more[96]; snprintf(more, sizeof more, ", and %d more (too many to list)", g_modsLeftOut); put(f, more); }
+        put(f, "\r\n"); put(f, g_crSum); put(f, "\r\n---------------- full log of the crashed session ----------------\r\n");
         lstrcpyW(src, g_dir); lstrcatW(src, L"W3CrashFix.activity.log");
         HANDLE in = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
         if (in != INVALID_HANDLE_VALUE) {
@@ -855,7 +1051,7 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
            "and the folder names of your in-game mods. "
            "Only the mod's author can see uploaded files. The &quot;Report id&quot; in the file is a random number made on your PC, so that several "
-           "reports from the same installation can be recognised. It says nothing about you; remove the <code>ReportId</code> line from "
+           "reports from the same machine/installation can be recognised. It says nothing about you; remove the <code>ReportId</code> line from "
            "<code>W3CrashFix.ini</code> (next to the mod, in the game's <code>bin\\x64_dx12</code> folder) to get a new one.</p>"
            "<p class=\"s\">A report sent this way can't be answered. For questions, use the "
            "<a target=\"_blank\" rel=\"noopener\" href=\"https://www.nexusmods.com/witcher3/mods/15624?tab=posts\">posts on Nexus Mods</a> or the "
