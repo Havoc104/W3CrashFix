@@ -6,6 +6,8 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 **Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it also switches itself on (reported by a user), but there is no long-term test result from GOG yet. On the Epic version it currently turns itself off and does nothing (reported by a user). Any other store version is untested.
 
+**Playing on Epic? Please help to make it work for you.** Start the game once with the mod installed, then post `W3CrashFix.activity.log` (next to the mod, in `bin\x64_dx12`) in a [GitHub issue](https://github.com/Havoc104/W3CrashFix/issues) or in the Posts tab on Nexus Mods. Logs from the Epic version are what's needed to add support for it.
+
 | Bug | Symptom |
 |---|---|
 | The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
