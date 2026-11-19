@@ -16,6 +16,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 // ---------------------------------------------------------------- dinput8 proxy
 static HMODULE g_real;
@@ -227,6 +228,41 @@ static const struct { unsigned rva; const char *name, *hex; } g_sig[] = {
     {RVA_CREATEPAGE, "createpage", "48895c2410574883ec308b81300100004c8d4c2440894424"},
     {RVA_VECGROW,    "vecgrow",    "48895c241048896c24184889742420574883ec304c8b4118"},
 };
+// Finding the code (Onno, 19 Nov 2026: "good idea"). A game update that only moves code around should not need a new
+// version of the mod. So each function is checked by a fingerprint of its WHOLE body, not only its first 24 bytes,
+// and if it is not at its 5.0.16 place, the mod looks for it in the rest of the game's code.
+// The fingerprint: the body's length and a 64-bit FNV-1a hash of all its bytes, in which the 4-byte fields that
+// change whenever code moves, even when the code itself is the same, count as 0: the distance of a call or jump to
+// code outside the function, and of a reference to the game's data. Everything else counts: every instruction, every
+// field offset in the allocator and page structures, every jump inside the function. The table holds no game code,
+// only these numbers. The fix is switched on only when ALL of this holds, and otherwise stays off (FIX DISABLED, with
+// the diag: lines as before):
+//   1. each of the five functions is at its 5.0.16 place with the same fingerprint, or else at exactly ONE other place
+//      in the game's code with the same first 24 bytes and the same fingerprint (two or more such places: off);
+//   2. the calls between them point at each other: ensure and forcenew must call vecgrow, invalidate and createpage
+//      exactly where those were found.
+// The crash function (crashfn, which holds the crash address) is looked for the same way, only for the verdict of the
+// crash report; if it is not found the fix still works, and the verdict says it cannot tell which crash it was.
+// Made with Claude's script from the 5.0.16 executable (Steam), 19 Nov 2026.
+enum { F_ENSURE, F_FORCENEW, F_INVALIDATE, F_CREATEPAGE, F_VECGROW, F_CRASHFN, F_COUNT, F_NEEDED = F_CRASHFN };
+static const struct { const char *name; unsigned rva, len; unsigned long long fnv; int nmask; unsigned short mask[5]; } g_body[F_COUNT] = {
+    {"ensure",     RVA_ENSURE,     0xA9,  0x45AA40975DA7D0B3ULL, 3, {0x36, 0x7D, 0x92}},
+    {"forcenew",   RVA_FORCENEW,   0x9C,  0x7A8B08B99E5FF502ULL, 3, {0x27, 0x69, 0x83}},
+    {"invalidate", RVA_INVALIDATE, 0x222, 0xC739991A451FC58AULL, 0, {0}},
+    {"createpage", RVA_CREATEPAGE, 0x103, 0xCBE81B8F6D7434B3ULL, 2, {0x1C, 0x9D}},
+    {"vecgrow",    RVA_VECGROW,    0xE6,  0x6894705B3814E5EAULL, 4, {0x22, 0x77, 0x9B, 0xB5}},
+    {"crashfn",    0x280ABA0,      0x1EB, 0x7F902515BEAF8820ULL, 5, {0x48, 0xC4, 0xDA, 0x159, 0x18A}},
+};
+static const char g_crashfnStart[] = "48895c240844894424184889542410555657415441554156";   // first 24 bytes of crashfn
+#define CRASHFN_CRASH_AT 0x19D                       // the crash address inside crashfn (5.0.16: w3+0x280AD3D)
+static const struct { int from; unsigned at; int to; } g_xref[] = {   // call rel32 at body offset 'at' must reach 'to'
+    {F_ENSURE, 0x36, F_VECGROW}, {F_ENSURE, 0x7D, F_INVALIDATE}, {F_ENSURE, 0x92, F_CREATEPAGE},
+    {F_FORCENEW, 0x27, F_VECGROW}, {F_FORCENEW, 0x69, F_INVALIDATE}, {F_FORCENEW, 0x83, F_CREATEPAGE},
+    {F_CRASHFN, 0x159, F_ENSURE},
+};
+static unsigned g_at[F_COUNT];                       // where each function was found in this game (0 = not found)
+static unsigned g_crashRva;                          // the crash address in this game (0 = crash function not found)
+static int g_moved;                                  // the code was found at other places than in 5.0.16
 static unsigned char *g_base;
 static wchar_t g_dir[MAX_PATH];                      // folder of the mod, with trailing backslash
 static int g_buildOk, g_fixInstalled;                // game code recognised / detour installed
@@ -246,7 +282,7 @@ typedef void (*VecGrow_t)(unsigned char *vec, long long elemSize);
 #define FPTR(p, o) (*(void **)((unsigned char *)(p) + (o)))
 
 static void vec_push(unsigned char *v, void *x) {
-    if (!(F64(v, V_CAPACITY) > F64(v, V_COUNT))) ((VecGrow_t)(g_base + RVA_VECGROW))(v, 8);
+    if (!(F64(v, V_CAPACITY) > F64(v, V_COUNT))) ((VecGrow_t)(g_base + g_at[F_VECGROW]))(v, 8);
     long long n = F64(v, V_COUNT);
     F64(v, V_COUNT) = n + 1;
     ((void **)FPTR(v, V_DATA))[n] = x;
@@ -284,22 +320,14 @@ static void fixed_ensure(unsigned char *a, int n) {
     if (nfree > 0) {
         page = ((void **)FPTR(a, A_FREE + V_DATA))[nfree - 1];
         F64(a, A_FREE + V_COUNT) = nfree - 1;
-        ((Invalidate_t)(g_base + RVA_INVALIDATE))(a, page);   // drop cached tables pointing into it
+        ((Invalidate_t)(g_base + g_at[F_INVALIDATE]))(a, page);   // drop cached tables pointing into it
     } else {
-        page = ((CreatePage_t)(g_base + RVA_CREATEPAGE))(a);
+        page = ((CreatePage_t)(g_base + g_at[F_CREATEPAGE]))(a);
     }
     FPTR(a, A_CUR) = page;
     F32(a, A_USED) = 0;
 }
 
-static int hexmatch(const unsigned char *p, const char *hex) {
-    for (; hex[0] && hex[1]; hex += 2, p++) {
-        unsigned v; char b[3] = {hex[0], hex[1], 0};
-        v = (unsigned)strtoul(b, NULL, 16);
-        if (*p != v) return 0;
-    }
-    return 1;
-}
 
 // ---------------------------------------------------------------- diagnostic for unsupported game builds
 // When the game's code is not the build this fix was written for (another store's executable, a game update),
@@ -378,18 +406,71 @@ static void diagnose(void) {
          moved == total ? " - this build can probably be supported with a small update" : "");
 }
 
+// Finding the code (see g_body): the fingerprint of the function body at p, compared with function i's.
+static int body_ok(const unsigned char *p, int i) {
+    unsigned len = g_body[i].len;
+    if (!readable(p, len)) return 0;
+    unsigned long long h = 0xcbf29ce484222325ULL;               // FNV-1a 64
+    for (unsigned k = 0; k < len; k++) {
+        unsigned char b = p[k];
+        for (int m = 0; m < g_body[i].nmask; m++)
+            if (k >= g_body[i].mask[m] && k < g_body[i].mask[m] + 4u) { b = 0; break; }
+        h = (h ^ b) * 0x100000001b3ULL;
+    }
+    return h == g_body[i].fnv;
+}
+// Where function i is in this game: its 5.0.16 place if the body is the same there, or else the one and only other
+// place in the game's code with the same first 24 bytes and the same body; 0 if there is none or more than one.
+static unsigned find_fn(int i, DWORD image) {
+    unsigned r = g_body[i].rva;
+    if ((unsigned long long)r + g_body[i].len <= image && body_ok(g_base + r, i)) return r;
+    unsigned char pat[24];
+    int n = hexbytes(i < F_NEEDED ? g_sig[i].hex : g_crashfnStart, pat, sizeof pat);
+    unsigned hits[16], found = 0;
+    int c = scan(pat, n, hits, 16), same = 0;
+    if (c > 16) return 0;                                       // too many candidates to tell: off
+    for (int k = 0; k < c; k++)
+        if ((unsigned long long)hits[k] + g_body[i].len <= image && body_ok(g_base + hits[k], i)) { found = hits[k]; same++; }
+    return same == 1 ? found : 0;
+}
+// Does the call whose 4-byte distance sits at offset 'at' of the function at rva 'from' reach rva 'to'?
+static int calls_to(unsigned from, unsigned at, unsigned to) {
+    int rel; memcpy(&rel, g_base + from + at, 4);
+    return (long long)from + at + 4 + rel == (long long)to;
+}
+
 static void install_fix(void) {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH);
     if (!wcsstr(exe, L"witcher3.exe")) { logf("fix: not witcher3.exe - disabled"); return; }
     g_base = (unsigned char *)GetModuleHandleW(NULL);
     DWORD image = ((IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew))->OptionalHeader.SizeOfImage;
-    for (unsigned i = 0; i < sizeof g_sig / sizeof g_sig[0]; i++)
-        if ((unsigned long long)g_sig[i].rva + 24 > image || !readable(g_base + g_sig[i].rva, 24) ||
-            !hexmatch(g_base + g_sig[i].rva, g_sig[i].hex)) {
-            logf("fix: code at w3+0x%X does not match the supported game build (Steam or GOG, 5.0.16) - FIX DISABLED (probe still logs)", g_sig[i].rva);
+    // See "Finding the code" above: all five functions, by their whole body, and the calls between them.
+    for (int i = 0; i < F_NEEDED; i++) {
+        g_at[i] = find_fn(i, image);
+        if (!g_at[i]) {
+            logf("fix: %s (w3+0x%X in 5.0.16) not found with the same code in this game build - FIX DISABLED (probe still logs)",
+                 g_body[i].name, g_body[i].rva);
             diagnose();
             return;
         }
+        if (g_at[i] != g_body[i].rva) g_moved = 1;
+    }
+    for (unsigned k = 0; k < sizeof g_xref / sizeof g_xref[0]; k++)
+        if (g_xref[k].from < F_NEEDED && !calls_to(g_at[g_xref[k].from], g_xref[k].at, g_at[g_xref[k].to])) {
+            logf("fix: %s does not call %s where that was found - FIX DISABLED (probe still logs)",
+                 g_body[g_xref[k].from].name, g_body[g_xref[k].to].name);
+            diagnose();
+            return;
+        }
+    // The crash function: only for the verdict of a crash report.
+    g_at[F_CRASHFN] = find_fn(F_CRASHFN, image);
+    if (g_at[F_CRASHFN] && calls_to(g_at[F_CRASHFN], 0x159, g_at[F_ENSURE])) g_crashRva = g_at[F_CRASHFN] + CRASHFN_CRASH_AT;
+    else { g_at[F_CRASHFN] = 0; logf("fix: the function that holds the crash address was not found; the crash report cannot tell which crash it was"); }
+    if (g_moved) {
+        logf("fix: this game build is not 5.0.16 as W3CrashFix knows it, but the code the fix needs is the same, at other places:");
+        for (int i = 0; i < F_COUNT; i++)
+            if (g_at[i]) logf("fix:   %s at w3+0x%X (5.0.16: w3+0x%X)", g_body[i].name, g_at[i], g_body[i].rva);
+    }
     g_buildOk = 1;
 #ifdef W3_CRASHTEST
     {   // Test builds only: an empty file W3CrashFix.nofix next to the mod leaves the fix out, so the real crash
@@ -405,14 +486,15 @@ static void install_fix(void) {
     void *target = (void *)fixed_ensure;
     memcpy(jmp + 2, &target, 8);
     DWORD old;
-    if (VirtualProtect(g_base + RVA_ENSURE, sizeof jmp, PAGE_EXECUTE_READWRITE, &old)) {
-        memcpy(g_base + RVA_ENSURE, jmp, sizeof jmp);
-        VirtualProtect(g_base + RVA_ENSURE, sizeof jmp, old, &old);
-        FlushInstructionCache(GetCurrentProcess(), g_base + RVA_ENSURE, sizeof jmp);
+    unsigned char *ens = g_base + g_at[F_ENSURE];
+    if (VirtualProtect(ens, sizeof jmp, PAGE_EXECUTE_READWRITE, &old)) {
+        memcpy(ens, jmp, sizeof jmp);
+        VirtualProtect(ens, sizeof jmp, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), ens, sizeof jmp);
         g_fixInstalled = 1;
         if (g_accepted) {
             g_fixActive = 1;
-            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", RVA_ENSURE);
+            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", g_at[F_ENSURE]);
         } else logf("fix: ready, but switched off until the license is accepted (the game behaves as without the mod)");
     } else logf("fix: VirtualProtect failed %lu - FIX DISABLED", GetLastError());
 }
@@ -422,14 +504,13 @@ static void install_fix(void) {
 // short summary on top, and writes W3CrashFix-report.html next to it and opens that page. The page shows the summary
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
-#define RVA_CRASH 0x280ad3d
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.7.0-5.0.16"
+#define W3CF_VERSION "1.8.1-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[128] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
 static volatile LONG g_crashed, g_noticed;
-static char g_crSum[4096], g_crEsc[6144], g_crBuf[65536];
+static char g_crSum[4096 + 65536], g_crEsc[6144], g_crBuf[65536];   // the summary holds the call stack (g_crStack)
 
 static const char *exc_name(DWORD c) {
     switch (c) {
@@ -487,29 +568,37 @@ static void fmt_regs(const CONTEXT *c) {
 // one the place that called the one before (a return address), as file+0xOFFSET. It is found by unwinding from the
 // registers of the crash with the unwind data every 64-bit Windows program carries; nothing is loaded and nothing is
 // written but this text. Many crashes stop in a small helper that many places use (for example the game's own "stop
-// here" when a check fails), and only the callers show which of those places it was. Safety on the crash path: at
-// most 16 steps, no heap, no waiting, and the stack pointer must stay inside this thread's own stack at every step;
-// on any doubt the walk stops and the summary shows what was found so far.
-static char g_crStack[900];
-static DWORD64 g_crFrames[16]; static int g_crNFrames;   // the same addresses as numbers, for the verdict
+// here" when a check fails), and only the callers show which of those places it was. Safety on the crash path: no
+// heap, no waiting, and the stack pointer must stay inside this thread's own stack and move up at every step; on any
+// doubt the walk stops and the summary shows what was found so far.
+// No limit on the number of steps (Onno, 19 Nov 2026: "make this unlimited"; 1.6.2 to 1.7.0 stopped after 16, which cut
+// off the stacks of the GPU crash at witcher3.exe+0x1F103A3). The walk still always ends: every step must move the
+// stack pointer up by at least 8 bytes and stay below the top of the stack, so it ends at the top at the latest. The
+// text has room for some 500 entries; on a stack deeper than that, the rest is still counted and the last entry says
+// how many more there were.
+static char g_crStack[65536];
+static DWORD64 g_crFrames[16]; static int g_crNFrames;   // the first addresses as numbers, for the verdict (it needs 4)
 static void fmt_stack(const CONTEXT *start) {
     CONTEXT c = *start;
     NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
     DWORD64 lo = (DWORD64)(ULONG_PTR)tib->StackLimit, hi = (DWORD64)(ULONG_PTR)tib->StackBase;
-    int n = 0;
+    int n = 0, i = 0, more = 0;
     g_crStack[0] = 0;
     g_crNFrames = 0;
-    for (int i = 0; i < 16 && c.Rip && n < (int)sizeof g_crStack - 80; i++) {
-        g_crFrames[g_crNFrames++] = c.Rip;
-        char at[192]; where((void *)(ULONG_PTR)c.Rip, at, sizeof at);
-        n += snprintf(g_crStack + n, sizeof g_crStack - n, "%s%s", i ? " < " : "", at);
+    for (; c.Rip; i++) {
+        if (g_crNFrames < (int)(sizeof g_crFrames / sizeof g_crFrames[0])) g_crFrames[g_crNFrames++] = c.Rip;
+        if (n < (int)sizeof g_crStack - 300) {
+            char at[192]; where((void *)(ULONG_PTR)c.Rip, at, sizeof at);
+            n += snprintf(g_crStack + n, sizeof g_crStack - n, "%s%s", i ? " < " : "", at);
+        } else more++;
         if (c.Rsp < lo || c.Rsp + 8 > hi || (c.Rsp & 7)) break;
-        DWORD64 imageBase = 0;
+        DWORD64 prevRsp = c.Rsp, imageBase = 0;
         PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(c.Rip, &imageBase, NULL);
         if (rf) { PVOID hd; DWORD64 est; RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, rf, &c, &hd, &est, NULL); }
         else { c.Rip = *(DWORD64 *)(ULONG_PTR)c.Rsp; c.Rsp += 8; }   // no unwind data (a leaf function): the return address is on top
-        if (c.Rsp < lo || c.Rsp > hi) break;
+        if (c.Rsp < prevRsp + 8 || c.Rsp > hi) break;              // must move up, and stay on this thread's stack
     }
+    if (more) n += snprintf(g_crStack + n, sizeof g_crStack - n, " < ... and %d more (too many to list)", more);
     if (!g_crStack[0]) lstrcpyA(g_crStack, "not available");
 }
 
@@ -634,7 +723,7 @@ static void scan_mods(void) {
 // as such. It is not derived from the hardware, Windows or the user's name; removing the line gives a new one, and
 // Uninstall and a declined license remove the whole file.
 // Since 1.7.0 users may personalise it (Onno, 18 Nov 2026): their own text before or after the 16 characters of the
-// id ("Havoc_5E19AF37C0802875", "5E19AF37C0802875havoc"), so the original id stays intact and new logs can still be
+// id ("Havoc_0123456789ABCDEF", "0123456789ABCDEFhavoc"), so the original id stays intact and new logs can still be
 // matched with logs sent before the change. The id is kept as written in W3CrashFix.ini if it is at most 40 letters,
 // digits, '_' and '-' with 16 hex digits in a row among them. A completely own id is shelved for now. Anything else
 // is replaced by a new random id; the log says only that it was not usable, and a line in the ini says so too.
@@ -646,7 +735,7 @@ static char g_reportId[48] = "none";
 // the plain one Windows writes is left alone.
 static const char g_idNote[] =
     "; ReportId: lets the mod's author recognise several crash reports from this machine/installation.\r\n"
-    "; You may personalise it: add your own text before or after the id, for example MyName_5E19AF37C0802875.\r\n"
+    "; You may personalise it: add your own text before or after the id, for example MyName_0123456789ABCDEF.\r\n"
     "; Keep the 16 characters of the id itself, then your new crash logs can still be matched with the ones you sent before.\r\n"
     "; Allowed: letters, digits, _ and -, 40 characters at most. Anything else is replaced by a new random id.\r\n";
 // A one-line notice right above the ReportId line when the id the user wrote there could not be used (Onno, 18 Nov
@@ -699,6 +788,21 @@ static void ini_note_report_id(void) {
     CloseHandle(f);
     if (!ok || got >= sizeof buf - 1 || (got >= 2 && (unsigned char)buf[0] == 0xFF && (unsigned char)buf[1] == 0xFE)) return;
     buf[got] = 0;
+    // Since 1.8.0 the note's example id is 0123456789ABCDEF; an ini written by 1.7.0 gets the new example (same length,
+    // in that comment line only). Nothing else in the file changes.
+    // The old example is recognised by its form (16 hex digits after "MyName_" in the note line), so no id is
+    // written out here.
+    static const char exHead[] = "; You may personalise it: add your own text before or after the id, for example MyName_";
+    static const char newId[] = "0123456789ABCDEF";
+    char *ex = strstr(buf, exHead);
+    if (ex) ex += sizeof exHead - 1;
+    int hex = ex != NULL;
+    for (int k = 0; hex && k < 16; k++) hex = isxdigit((unsigned char)ex[k]) != 0;
+    if (hex && ex[16] == '.' && memcmp(ex, newId, 16) != 0) {
+        memcpy(ex, newId, 16);
+        f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, buf, got, &w, NULL); CloseHandle(f); }
+    }
     if (strstr(buf, "; ReportId: ")) return;                        // the note is there already
     char *at = strstr(buf, "\nReportId=");
     if (at) at++; else if (!strncmp(buf, "ReportId=", 9)) at = buf; else return;
@@ -921,7 +1025,15 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     summary("CRASH");
     if (ep->ContextRecord) {
         fmt_regs(ep->ContextRecord); logf("[CRASH] registers: %s", g_crRegs);
-        fmt_stack(ep->ContextRecord); logf("[CRASH] call stack: %s", g_crStack);
+        fmt_stack(ep->ContextRecord);
+        // not with logf: its line ends after 1024 characters, and the call stack can be much longer
+        if (g_log != INVALID_HANDLE_VALUE) {
+            char pre[64]; SYSTEMTIME st; GetLocalTime(&st);
+            snprintf(pre, sizeof pre, "%02d:%02d:%02d +%5lus  [CRASH] call stack: ", st.wHour, st.wMinute, st.wSecond,
+                     (unsigned long)((GetTickCount() - g_t0) / 1000));
+            DWORD w; WriteFile(g_log, pre, (DWORD)strlen(pre), &w, NULL);
+            WriteFile(g_log, g_crStack, (DWORD)strlen(g_crStack), &w, NULL); WriteFile(g_log, "\r\n", 2, &w, NULL);
+        }
     } else { lstrcpyA(g_crRegs, "not available"); lstrcpyA(g_crStack, "not available"); }
 
     long long rva = g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
@@ -930,20 +1042,25 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     // through a NULL pointer, then shows up in a function that the crash function called. It counts as the
     // descriptor heap crash when the exception is a read near address 0 and one of the next three entries of the
     // call stack lies in the function that holds witcher3.exe+0x280AD3D (found with the game's own unwind data).
+    // Since 1.8.0 the crash address is the one found in this game (g_crashRva, see "Finding the code"); in 5.0.16 it is
+    // witcher3.exe+0x280AD3D.
     int deeper = 0;
-    if (g_buildOk && g_base && rva != RVA_CRASH && code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2 &&
+    if (g_buildOk && g_base && g_crashRva && rva != g_crashRva && code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2 &&
         er->ExceptionInformation[0] == 0 && er->ExceptionInformation[1] < 0x10000) {
         DWORD64 ib = 0;
-        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry((DWORD64)(ULONG_PTR)(g_base + RVA_CRASH), &ib, NULL);
+        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry((DWORD64)(ULONG_PTR)(g_base + g_crashRva), &ib, NULL);
         if (fn && ib == (DWORD64)(ULONG_PTR)g_base)
             for (int i = 1; i < g_crNFrames && i <= 3 && !deeper; i++) {
                 DWORD64 r = g_crFrames[i] - ib;
                 if (g_crFrames[i] > ib && r > fn->BeginAddress && r <= fn->EndAddress) deeper = 1;
             }
     }
+    static char notOurs[200];
+    snprintf(notOurs, sizeof notOurs, "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x%X). Something else crashed the game.", g_crashRva);
     const char *verdict =
         !g_buildOk ? "W3CrashFix does not support this build of the game, so it cannot tell which crash this is."
-        : rva != RVA_CRASH && !deeper ? "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x280AD3D). Something else crashed the game."
+        : !g_crashRva ? "W3CrashFix did not find the place of its crash in this build of the game, so it cannot tell which crash this is."
+        : rva != g_crashRva && !deeper ? notOurs
         : g_fixActive ? (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack), although the fix was active. That should not happen: please report it."
                                 : "This is the descriptor heap crash that W3CrashFix is made for, although the fix was active. That should not happen: please report it.")
         : (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack). The fix was not active in this session."
@@ -956,8 +1073,18 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     char mem[256]; vram(mem, sizeof mem);
     // The summary is written in three parts: the lines above the mods, the mods list (which can be long, see
     // g_modNames), and the lines below it.
-    char head[384], mods[96];
-    snprintf(head, sizeof head, "W3CrashFix crash report\r\nMod: %s (%s)\r\nReport id: %s\r\n", "W3CrashFix " W3CF_VERSION, g_flavor, g_reportId);
+    char head[448], mods[96];
+    // Date and time of the crash (Onno, 18 Nov 2026). The log lines only carry the time of day, so without this an old
+    // crash log could not be told from a new one (a player sent the same log twice; a later crash the mod did not catch
+    // leaves the old file in place). The report page uses the same moment for its "older crash" notice.
+    static const char *const mon[12] = { "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec" };
+    SYSTEMTIME ct; GetLocalTime(&ct);
+    char when[48];
+    snprintf(when, sizeof when, "%d %s %04d, %02d:%02d", ct.wDay, mon[(ct.wMonth >= 1 && ct.wMonth <= 12) ? ct.wMonth - 1 : 0], ct.wYear, ct.wHour, ct.wMinute);
+    FILETIME cft; GetSystemTimeAsFileTime(&cft);
+    unsigned long long crashMs = ((((unsigned long long)cft.dwHighDateTime << 32) | cft.dwLowDateTime) - 116444736000000000ULL) / 10000ULL;
+    snprintf(head, sizeof head, "W3CrashFix crash report\r\nCrashed at: %s (this PC's time)\r\nMod: %s (%s)\r\nReport id: %s\r\n",
+             when, "W3CrashFix " W3CF_VERSION, g_flavor, g_reportId);
     if (g_modsFound) snprintf(mods, sizeof mods, "In-game mods (%d): ", g_modsFound); else lstrcpyA(mods, "In-game mods: ");
     snprintf(g_crSum, sizeof g_crSum,
              "Game build supported: %s\r\n"
@@ -971,7 +1098,7 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
              "Fix: %lld pages rescued, %lld retired normally\r\n"
              "Memory: %s\r\n"
              "Verdict: %s\r\n%s",
-             g_buildOk ? "yes" : "no", g_fixActive ? "yes" : "no",
+             !g_buildOk ? "no" : g_moved ? "yes (not 5.0.16, but the same code at other places)" : "yes", g_fixActive ? "yes" : "no",
              (unsigned long)code, exc_name(code), detail, at, g_crRegs, g_crStack,
              (unsigned long)((GetTickCount() - g_t0) / 60000), g_adapterName,
              g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
@@ -1017,8 +1144,23 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "h1{font-size:26px;margin:0 0 4px}pre{background:#0d0e11;border:1px solid #333;border-radius:6px;padding:14px;white-space:pre-wrap;word-break:break-word}"
            "a{color:#8ab4f8}.b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
            ".g{background:#30363d;padding:6px 12px;font-weight:400}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}li{margin:4px 0}"
-           "</style></head><body><h1>The Witcher 3 crashed</h1>"
-           "<p>W3CrashFix noticed the crash and saved a report on your PC. <b>Nothing has been sent anywhere.</b> "
+           ".o{background:#3a2a00;border:1px solid #b8860b;border-radius:6px;padding:10px 14px}"
+           "</style></head><body><h1>The Witcher 3 crashed</h1>");
+    // When the crash happened, and a notice if the page is opened again later (Onno, 18 Nov 2026): the page and the
+    // crash log stay until the next crash the mod catches, so an old page must not look like a new crash.
+    {
+        char t[640], tEsc[800];
+        snprintf(t, sizeof t, "%s (your PC's time)", when);
+        html_esc(t, tEsc, sizeof tEsc);
+        put(f, "<p class=\"s\" id=\"w\" data-t=\"");
+        snprintf(t, sizeof t, "%llu", crashMs); put(f, t);
+        put(f, "\">Crash of "); put(f, tEsc); put(f, ".</p>"
+               "<p class=\"o\" id=\"o\" hidden><b>This page belongs to an older crash</b>, the one above. "
+               "If the game crashed again since then and no new page opened, W3CrashFix did not catch that crash "
+               "(for example the game froze instead of crashing). Its crash log is then not on your PC, and the file below "
+               "is still the one from the older crash: if you sent it before, there is no need to send it again.</p>");
+    }
+    put(f, "<p>W3CrashFix noticed the crash and saved a report on your PC. <b>Nothing has been sent anywhere.</b> "
            "If you would like to help, you can send the crash log to the mod's author with the button below.</p>"
            "<p class=\"s\">This page is a file on your own PC, not a website: look at the address bar, it starts with <code>file:</code>. "
            "The mod itself never connects to the internet. Only your browser does, and only when you click the button.</p><pre id=\"s\">");
@@ -1046,6 +1188,11 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "<p class=\"s\">Ctrl+V pasted nothing? <button class=\"b g\" data-p=\"");
     put(f, dirEsc);
     put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Copy the file's path</button> and paste it again into the &quot;File name&quot; box.</p>"
+           // Onno, 19 Nov 2026: reports are always welcome, but a test on a clean game tells whether a mod plays a part
+           "<p class=\"s\"><b>Every crash log is welcome, also without a test.</b> It helps even more if you also check whether the crash "
+           "happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, "
+           "keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too and put &quot;clean&quot; in the "
+           "name you give the upload. Logs of both, with and without mods, from the same PC are especially helpful.</p>"
            "<p>Thanks for sending your crash log. It helps find and fix crashes in W3CrashFix.</p>"
            "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The file holds a summary "
            "and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
@@ -1069,9 +1216,12 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     // out from what is written so far plus the rest of the page, a second time if the number's length changed it.
     static const char sizeHead[] = "and showing this file in it adds nothing to your game folder but the file itself (";
     static const char sizeTail[] = " KB), and the installer's Uninstall removes it.</p>"
-           // the only script on the page: puts the file's path on the clipboard when the Send button or the small button
-           // is clicked. The Send link still opens the upload page as usual (nothing is stopped or redirected).
-           "<script>function cp(b){var t=b.getAttribute('data-p'),a=document.createElement('textarea');"
+           // the only script on the page: shows the "older crash" notice when the page is opened more than an hour after
+           // the crash, and puts the file's path on the clipboard when the Send button or the small button is clicked.
+           // The Send link still opens the upload page as usual (nothing is stopped or redirected).
+           "<script>(function(){var w=document.getElementById('w'),t=+w.getAttribute('data-t');"
+           "if(t&&Date.now()-t>3600000){document.getElementById('o').hidden=false}})();"
+           "function cp(b){var t=b.getAttribute('data-p'),a=document.createElement('textarea');"
            "a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a);"
            "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).catch(function(){})}"
            "if(b.tagName=='A'){document.getElementById('c').textContent='The path is copied: paste it with Ctrl+V on the upload page.'}"
@@ -1389,7 +1539,7 @@ static DWORD WINAPI license_thread(LPVOID unused) {
         g_accepted = 1;
         if (g_fixInstalled) {
             g_fixActive = 1;
-            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", RVA_ENSURE);
+            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", g_at[F_ENSURE]);
         }
         start_work();
     } else if (r == 3) {
@@ -1420,12 +1570,75 @@ static HANDLE open_log(const wchar_t *path) {
                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 }
 
+// W3CrashFix-send-log.html (Onno, 19 Nov 2026: "unmodded games without crashes require a way to submit .activity logs",
+// "so do modded games", "go with 2"). The report page only appears after a crash, so a player whose game did NOT crash
+// had no way to send a log. This page is written at every game start next to the mod and is never opened by the mod:
+// the player opens it from the game's bin\x64_dx12 folder (README and Nexus say so). It has the same Send button as the
+// report page, for W3CrashFix.activity.log. On a game build the mod doesn't support (for example the Epic version) it
+// says that this log is especially helpful: its "diag:" lines show how that build differs. Nothing is sent by the mod.
+static void write_send_page(void) {
+    wchar_t path[MAX_PATH];
+    HANDLE f = create_in_dir(L"W3CrashFix-send-log.html", path);
+    if (f == INVALID_HANDLE_VALUE) { logf("send page: could not write W3CrashFix-send-log.html (%lu)", GetLastError()); return; }
+    char dir8[3 * MAX_PATH], dirEsc[4 * MAX_PATH];
+    WideCharToMultiByte(CP_UTF8, 0, g_dir, -1, dir8, sizeof dir8, NULL, NULL);
+    html_esc(dir8, dirEsc, sizeof dirEsc);
+    put(f, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Send your W3CrashFix log</title><style>"
+           "body{font:16px/1.5 Segoe UI,Arial,sans-serif;max-width:860px;margin:32px 40px;padding:0 16px;box-sizing:border-box;background:#16181c;color:#e8e6e3}"
+           "h1{font-size:26px;margin:0 0 4px}a{color:#8ab4f8}"
+           ".b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
+           ".g{background:#30363d;padding:6px 12px;font-weight:400}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}li{margin:4px 0}"
+           ".o{background:#3a2a00;border:1px solid #b8860b;border-radius:6px;padding:10px 14px}"
+           "</style></head><body><h1>Send your W3CrashFix log</h1>"
+           "<p><b>Every log is welcome, also from a game that did not crash</b>, with or without other mods. A session without a crash "
+           "shows how the game behaves when all goes well, and can be compared with sessions that crashed. "
+           "Logs of both, with and without mods, from the same PC are especially helpful.</p>");
+    if (!g_buildOk)
+        put(f, "<p class=\"o\"><b>Your log is especially helpful.</b> W3CrashFix does not support this build of the game (for example the "
+               "Epic version), so the fix is off. The log shows how this build differs, which is what is needed to make the fix work on it.</p>");
+    put(f, "<p class=\"s\">This page is a file on your own PC, not a website: look at the address bar, it starts with <code>file:</code>. "
+           "The mod itself never connects to the internet. Only your browser does, and only when you click the button.</p>"
+           "<p><b>The file to send:</b><br><code>");
+    put(f, dirEsc);
+    put(f, "W3CrashFix.activity.log</code><br><span class=\"s\">It holds the session that is running now, or the last one if the game is closed. "
+           "Best sent after you close the game and before you start it again: at the next start it is renamed to "
+           "<code>W3CrashFix.activity.previous.log</code> (you can send that one instead), and the start after that replaces it.</span></p>"
+           "<p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
+    put(f, dirEsc);
+    put(f, "W3CrashFix.activity.log\" onclick=\"cp(this)\">Send the activity log</a> <span class=\"s\" id=\"c\"></span></p>"
+           "<p><b>How it works</b></p><ol>"
+           "<li>Click the button. A pCloud page opens, and the log's path is copied. If the page shows a cookie notice, answer it first; it can cover the buttons.</li>"
+           "<li>On that page, click <b>Click Here to Add Files</b>. In the window that opens, press Ctrl+V and then Enter.</li>"
+           "<li>Type any name you like. A made-up one is fine. Adding &quot;no crash&quot;, and &quot;clean&quot; if you played without other mods, helps.</li>"
+           "<li>Click Upload. When you see &quot;Files are uploaded!&quot;, you are done and can close that tab.</li></ol>"
+           "<p class=\"s\">pCloud then offers you an account. You don't need one.</p>"
+           "<p class=\"s\">Ctrl+V pasted nothing? <button class=\"b g\" data-p=\"");
+    put(f, dirEsc);
+    put(f, "W3CrashFix.activity.log\" onclick=\"cp(this)\">Copy the file's path</button> and paste it again into the &quot;File name&quot; box.</p>"
+           "<p class=\"s\">Did the game crash? Then send the crash log instead: W3CrashFix opens a report page for it after the crash.</p>"
+           "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The log is technical data, which can "
+           "include the folder the game is installed in and the folder names of your in-game mods. Only the mod's author can see uploaded files. "
+           "The &quot;report id&quot; in it is a random number made on your PC, so that several logs from the same machine/installation can be "
+           "recognised; it says nothing about you. A log sent this way can't be answered. For questions, use the "
+           "<a target=\"_blank\" rel=\"noopener\" href=\"https://www.nexusmods.com/witcher3/mods/15624?tab=posts\">posts on Nexus Mods</a> or the "
+           "<a target=\"_blank\" rel=\"noopener\" href=\"https://github.com/Havoc104/W3CrashFix/issues\">issues on GitHub</a>.</p>"
+           "<p class=\"s\">W3CrashFix writes this page at every game start; the installer's Uninstall removes it.</p>"
+           "<script>function cp(b){var t=b.getAttribute('data-p'),a=document.createElement('textarea');"
+           "a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(a);"
+           "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).catch(function(){})}"
+           "if(b.tagName=='A'){document.getElementById('c').textContent='The path is copied: paste it with Ctrl+V on the upload page.'}"
+           "else{b.textContent='Path copied'}}</script></body></html>");
+    CloseHandle(f);
+    logf("send page: W3CrashFix-send-log.html written (open it to send this log, also without a crash)");
+}
+
 // Everything the mod does besides the fix itself: crash report, heap statistics. Runs only after the license is accepted.
 static void start_work(void) {
     char opv[8]; ini_get(L"OpenReportPage", opv, sizeof opv);
     if (!opv[0]) ini_set(L"OpenReportPage", "1");        // make the setting visible to anyone who opens the file
     load_report_id();
     scan_mods();
+    write_send_page();
     guard_filter(1);
     AddVectoredExceptionHandler(1, crash_notice);
 #ifdef W3_CRASHTEST

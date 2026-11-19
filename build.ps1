@@ -18,6 +18,52 @@ if (-not $Zig) {
 }
 New-Item -ItemType Directory -Force build | Out-Null
 if ($Package -and $CrashTest) { throw 'A crash-test build must never be packaged for release.' }
+
+# Privacy check before a release (Onno, 19 Nov 2026, after the 1.8.0 changelog told readers that an example id had
+# been a real player's: "we need to work together to prevent this type of thing from happening again"). Nothing is
+# built when a published text contains a player's report id, an upload name or another private term. The terms live
+# in promo\private-terms.txt and the ids in promo\private-ids.txt; promo\ is never packaged or committed, so this
+# script itself names none of them. The ids are taken from the 'Report id' lines of the crash logs that were
+# already scanned and analysed (promo\pcloud-analysed.txt), when the pCloud drive is there; ids found once are kept.
+function Test-Privacy {
+    $terms = @(Get-Content promo\private-terms.txt -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -and -not $_.StartsWith('#') } | ForEach-Object { $_.Trim() })
+    $idFile = 'promo\private-ids.txt'
+    $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    Get-Content $idFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '^[0-9A-F]{16}$' } | ForEach-Object { [void]$ids.Add($_) }
+    $logRoot = (Get-Content promo\pcloud-folder.txt -TotalCount 1 -ErrorAction SilentlyContinue)   # where the uploads land on this PC
+    if ($logRoot -and (Test-Path -LiteralPath $logRoot)) {
+        foreach ($line in Get-Content promo\pcloud-analysed.txt -ErrorAction SilentlyContinue | Where-Object { $_ -notmatch '^#' }) {
+            $rel = ($line -split "`t")[1]; if (-not $rel) { continue }
+            $f = Join-Path $logRoot $rel
+            if (-not (Test-Path -LiteralPath $f)) { continue }
+            foreach ($l in Get-Content -LiteralPath $f -TotalCount 40) {
+                foreach ($m in [regex]::Matches($l, '(?i)report id:\s*\S*?([0-9A-F]{16})')) { [void]$ids.Add($m.Groups[1].Value.ToUpper()) }
+            }
+        }
+        [IO.File]::WriteAllLines("$PWD\$idFile", [string[]]($ids | Sort-Object), (New-Object Text.UTF8Encoding $false))
+    } else { 'NOTE: privacy check without the pCloud drive: only the report ids already in promo\private-ids.txt are checked' }
+    if (-not $terms.Count) { throw 'Privacy check: promo\private-terms.txt is missing or empty' }
+    $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value
+    $short = $ver.Split('-')[0]
+    # Everything that goes into the release files, plus the texts that go on GitHub and Nexus by hand.
+    $files = @(Get-ChildItem src, .github -Recurse -File) + @(Get-Item build.ps1, Install-W3CrashFix.ps1, README.md, LICENSE, .gitignore, nexus\description.bbcode) +
+             @(Get-ChildItem "promo\release-$short" -File -ErrorAction SilentlyContinue)
+    $text = '\.(md|c|h|ps1|rc|manifest|def|py|yml|bbcode|txt|svg|gitignore)$|LICENSE$'
+    $found = @()
+    foreach ($f in $files | Where-Object { $_.Name -match $text }) {
+        $t = [IO.File]::ReadAllText($f.FullName)
+        foreach ($w in $terms) {
+            $rx = '(?i)(?<![\w])' + [regex]::Escape($w) + '(?![\w])'
+            if ($t -match $rx) { $found += "$($f.FullName.Substring($PWD.Path.Length + 1)): private term '$w'" }
+        }
+        foreach ($id in $ids) {   # the whole id, or its first 8 characters on their own (as in "0123ABCD...")
+            if ($t -match "(?i)$id" -or $t -match "(?i)(?<![0-9A-F])$($id.Substring(0, 8))(?![0-9A-F])") { $found += "$($f.FullName.Substring($PWD.Path.Length + 1)): a player's report id ($($id.Substring(0, 4))...)" }
+        }
+    }
+    if ($found.Count) { throw "Privacy check failed, nothing was built:`n  " + ($found -join "`n  ") }
+    "Privacy check passed: $($files.Count) files, $($terms.Count) private terms, $($ids.Count) report ids"
+}
+if ($Package) { Test-Privacy }
 $cc = @('cc', '-target', 'x86_64-windows-gnu', '-O2', '-Wall')
 [string[]]$modFlags = @('-DW3_LICENSE'); if ($CrashTest) { $modFlags += '-DW3_CRASHTEST' }   # W3_LICENSE: the license dialog at game start
 $guiLibs = @('-luser32', '-lkernel32', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-lversion')
@@ -71,6 +117,33 @@ foreach ($need in 'FIX DISABLED', 'diag: 4 of 5 functions located', 'ensure: sam
 }
 if ($log.Contains('ACTIVE')) { throw 'test_diag: the mod patched a program that is not the game' }
 if ($log.Contains('license: asking')) { throw 'test_diag: the license dialog was shown on an unsupported build' }
+if ($log -match 'not found with the same code') { } else { throw 'test_diag: the stand-in has only the first bytes of each function; the mod must say it did not find them with the same code' }
+
+# Finding the code (1.8.0): the stand-in copies the six real functions from the installed game to other places in its
+# own code (nothing of the game is in this repository). The mod must find all of them, say they moved, and detour the
+# copy of ensure. With a second copy of ensure it must patch nothing. Needs the real 5.0.16 witcher3.exe on this PC;
+# without it the test is skipped and says so.
+$gameExe = if ($env:W3_GAME_EXE) { $env:W3_GAME_EXE } else { 'C:\Games\The Witcher 3\bin\x64_dx12\witcher3.exe' }
+if (Test-Path $gameExe) {
+    $r = 'build\test\reloc'
+    Remove-Item $r -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $r | Out-Null
+    Copy-Item "$t\witcher3.exe", build\W3CrashFix.asi $r
+    Set-Content "$r\W3CrashFix.ini" "[W3CrashFix]`r`nLicenseAccepted=$licId`r`nOpenReportPage=0" -Encoding ascii
+    $ro = (& "$r\witcher3.exe" "$PWD\$r\W3CrashFix.asi" reloc $gameExe) -join "`n"
+    $rl = Get-Content "$r\W3CrashFix.activity.log" -Raw
+    foreach ($need in 'the code the fix needs is the same, at other places', 'fix:   ensure at w3+0x', 'fix:   crashfn at w3+0x', 'fix: descriptor page recycling fix ACTIVE') {
+        if (-not $rl.Contains($need)) { throw "reloc test: log lacks '$need'`n$ro" }
+    }
+    if ($ro -notmatch 'detour on the copy of ensure: yes') { throw "reloc test: the copy of ensure was not detoured`n$ro" }
+    Remove-Item "$r\W3CrashFix.activity.log", "$r\W3CrashFix.activity.previous.log" -ErrorAction SilentlyContinue
+    $ro = (& "$r\witcher3.exe" "$PWD\$r\W3CrashFix.asi" relocdup $gameExe) -join "`n"
+    $rl = Get-Content "$r\W3CrashFix.activity.log" -Raw
+    if (-not $rl.Contains('ensure (w3+0x2809760 in 5.0.16) not found with the same code') -or $rl.Contains('ACTIVE')) { throw "reloc test: with two copies of ensure the mod must patch nothing`n$rl" }
+    if ($ro -notmatch 'detour on the copy of ensure: no') { throw "reloc test: a copy of ensure was detoured although there were two`n$ro" }
+    Remove-Item $r -Recurse -Force
+    'Test passed: finding the code at other places (and refusing when it is there twice)'
+} else { "Test SKIPPED: finding the code at other places (no game executable at $gameExe; set W3_GAME_EXE)" }
 if ($code -eq 0) {
     if ($log -notmatch 'caller=witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: heap caller was not named' }
     if ($log -notmatch 'module: witcher3\.exe = ') { throw 'test_diag: module path line missing' }
@@ -88,7 +161,7 @@ if ($code -eq 0) {
     # The crash log has a folder of its own, with nothing else in it. One left in the old place by an earlier version must go.
     $clf = "$t\W3CrashFix crash report\W3CrashFix.crash.log"
     Remove-Item "$t\W3CrashFix crash report" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "$t\W3CrashFix-report.html", "$t\W3CrashFix.ini" -ErrorAction SilentlyContinue
+    Remove-Item "$t\W3CrashFix-report.html", "$t\W3CrashFix.ini", "$t\W3CrashFix-send-log.html" -ErrorAction SilentlyContinue
     Set-Content "$t\W3CrashFix.crash.log" 'an old crash log in the old place' -Encoding ascii
     Remove-Item 'build\Mods', 'build\DLC' -Recurse -Force -ErrorAction SilentlyContinue
     Set-Content "$t\W3CrashFix.noreport" '' -Encoding ascii
@@ -110,6 +183,15 @@ if ($code -eq 0) {
     if (([regex]::Matches($csLine, 'witcher3\.exe\+0x[0-9A-F]+')).Count -lt 2) { throw "test_diag: the call stack names no caller in the stand-in game: $csLine" }
     if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('[CRASH] call stack: ')) { throw 'test_diag: the activity log lacks the call stack line' }
     if (@(Get-ChildItem "$t\W3CrashFix crash report").Count -ne 1) { throw 'test_diag: the crash log''s own folder must hold exactly one file' }
+    # Send page for the activity log (Onno, 19 Nov 2026): written at every start, never opened by the mod. The stand-in
+    # game is an unsupported build, so the "especially helpful" notice must be there too. Exactly one script.
+    $sp = if (Test-Path "$t\W3CrashFix-send-log.html") { Get-Content "$t\W3CrashFix-send-log.html" -Raw } else { '' }
+    if (-not $sp) { throw 'test_diag: W3CrashFix-send-log.html was not written' }
+    foreach ($need in 'Send the activity log', 'u.pcloud.com/#/puplink?code=', 'W3CrashFix.activity.log" onclick="cp(this)">Send the activity log</a>', 'also from a game that did not crash', 'Your log is especially helpful', 'W3CrashFix.activity.previous.log', "Copy the file's path") {
+        if (-not $sp.Contains($need)) { throw "test_diag: the send page lacks '$need'" }
+    }
+    if (([regex]::Matches($sp, '<script')).Count -ne 1) { throw 'test_diag: the send page must have exactly one script' }
+    if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('send page: W3CrashFix-send-log.html written')) { throw 'test_diag: the activity log lacks the send page line' }
     # The report id: 16 hex digits, the same in the summary and in W3CrashFix.ini.
     # Test builds (-CrashTest) always use the fixed id 1337testlulz and write it to W3CrashFix.ini, note included.
     # Nowhere in the mod's own texts may personalising the id be mentioned (only in W3CrashFix.ini).
@@ -138,6 +220,17 @@ if ($code -eq 0) {
         if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" }
     }
     if (([regex]::Matches($rp, 'onclick="cp\(this\)"')).Count -ne 2) { throw 'test_diag: both the Send button and the small button must copy the path' }
+    # 1.7.1: the date and time of the crash, in the crash log and on the page, and the "older crash" notice (hidden at first).
+    $today = Get-Date
+    $whenRx = '{0} {1} {2:0000}, \d\d:\d\d' -f $today.Day, $today.ToString('MMM', [Globalization.CultureInfo]::InvariantCulture), $today.Year
+    if ($cl -notmatch "(?m)^W3CrashFix crash report\r?\nCrashed at: $whenRx \(this PC's time\)\r?\nMod: ") { throw 'test_diag: the crash log lacks the "Crashed at:" line (date and time) right below its first line' }
+    if ($rp -notmatch "<p class=""s"" id=""w"" data-t=""\d{13}"">Crash of $whenRx \(your PC's time\)\.</p>") { throw 'test_diag: the report page lacks the date and time of the crash' }
+    $dataT = [int64]([regex]::Match($rp, 'data-t="(\d{13})"').Groups[1].Value)
+    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if ([math]::Abs($nowMs - $dataT) -gt 600000) { throw "test_diag: the page's crash time (data-t=$dataT) is not the time of the test crash" }
+    foreach ($need in '<p class="o" id="o" hidden><b>This page belongs to an older crash</b>', 'Date.now()-t>3600000', "document.getElementById('o').hidden=false") {
+        if (-not $rp.Contains($need)) { throw "test_diag: report page lacks the older-crash notice part '$need'" }
+    }
     # The footnote names the page's own size, and it must be right (KB with one decimal, rounded).
     $rpBytes = (Get-Item "$t\W3CrashFix-report.html").Length
     $want = '{0}.{1}' -f [math]::Floor([math]::Floor(($rpBytes * 10 + 512) / 1024) / 10), ([math]::Floor(($rpBytes * 10 + 512) / 1024) % 10)
@@ -265,7 +358,7 @@ New-Item -ItemType Directory -Force "$ub\W3CrashFix crash report" | Out-Null
 Copy-Item "$t\witcher3.exe" $ub
 Copy-Item build\W3CrashFix.asi "$ub\W3CrashFix.asi"; Copy-Item build\W3CrashFix.asi "$ub\W3CrashFix.removed"
 foreach ($n in 'W3CrashFix.ini', 'W3CrashFix.accepted', 'W3CrashFix.id', 'W3CrashFix.noreport', 'W3CrashFix-report.html', 'W3CrashFix.crash.log',
-               'W3CrashFix crash report\W3CrashFix.crash.log', 'W3CrashFix.activity.log', 'W3CrashFix.activity.previous.log', 'W3CrashFix.log', 'W3CrashFix.previous.log') {
+               'W3CrashFix crash report\W3CrashFix.crash.log', 'W3CrashFix.activity.log', 'W3CrashFix.activity.previous.log', 'W3CrashFix.log', 'W3CrashFix.previous.log', 'W3CrashFix-send-log.html') {
     Set-Content "$ub\$n" 'x' -Encoding ascii
 }
 $p = Start-Process build\W3CrashFix-Installer.exe -ArgumentList '--uninstall', "`"$PWD\$u`"" -Wait -PassThru -WindowStyle Hidden

@@ -22,10 +22,10 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.activity.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `1.7.0-5.0.16` is mod version 1.7.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `1.8.1-5.0.16` is mod version 1.8.1 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
-**Safe on other versions and after game updates.** Before patching anything, the mod checks the exact bytes of every function it touches. If that code is different (another store version or a game update), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
+**Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
 
 ### Tested with
 
@@ -78,6 +78,8 @@ The installer checks your game version and won't overwrite another mod's `dinput
 
 **Windows will show a warning** ("Windows protected your PC") when you start the installer. That's normal: the installer isn't code-signed, because a signing certificate costs money. It is safe to run. It only copies the W3CrashFix file into your game folder, and its full source code is in this repository (`src\installer.c`). Click **More info**, then **Run anyway**.
 
+**Scanned before every release.** Every release file is uploaded to [VirusTotal](https://www.virustotal.com), which checks it with about 70 virus scanners, and the results are in the release notes on GitHub. An installer that isn't code-signed is sometimes flagged by one or two lesser-known scanners; the full source code is here, so you can check what it does.
+
 ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use during testing. See also [Other mods](#other-mods).
 
 ### Check that it works
@@ -85,7 +87,7 @@ ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use du
 Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 1.7.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 1.8.1-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -132,7 +134,7 @@ On a game version the mod does not support, the window does not appear: the fix 
 The mod notices a crash and helps you report it:
 
 - It writes what crashed (file and offset) into its activity log.
-- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: mod version, a random report id, the in-game mods that were enabled, whether the fix was active, the crash address and the processor's registers, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file.
+- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: the date and time of the crash, mod version, a random report id, the in-game mods that were enabled, whether the fix was active, the crash address and the processor's registers, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file. The report page shows the date and time of the crash too; opened again more than an hour later, it says it belongs to an older crash, so an old log isn't mistaken for a new one.
 - It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log**.
 
 **Sending a report.** The button opens an upload page of the author's online storage (pCloud) and copies the crash log's path at the same time. On that page, click **Click Here to Add Files**, press Ctrl+V in the window that opens, and then Enter. Or drag the crash log from the small folder window onto the page; that window asks Windows to keep it on top. Then type any name you like (a made-up one is fine) and click Upload. You don't need an account.
@@ -145,13 +147,17 @@ The mod notices a crash and helps you report it:
 
 **Crashes with another cause are welcome too.** The crash log is made for every crash, not only for the one W3CrashFix fixes. Such reports might be analysed in an attempt to provide a fix. That is not a promise.
 
+**Your report is always welcome, also without a test.** It helps even more if you also check whether the crash happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too and put "clean" in the name you give the upload. A crash on a clean game points at the game itself; a crash that only happens with mods points at one of them. Logs of both, with and without mods, from the same PC are especially helpful: the report id shows they belong together, and the two can be compared side by side.
+
+**No crash? Your log is welcome too.** A session without a crash, with or without other mods, shows how the game behaves when all goes well, and can be compared with sessions that crashed. To send it, open `W3CrashFix-send-log.html` in the game's `bin\x64_dx12` folder (the mod writes it at every game start). It has the same **Send** button as the report page, for `W3CrashFix.activity.log`. Send it after you close the game and before you start it again; at the next start the log becomes `W3CrashFix.activity.previous.log`, which you can send instead. Logs from the **Epic version** are especially helpful: the fix doesn't work there yet, and the log shows how that build differs. Long sessions on the **GOG version** help too, since there is no long-term result from GOG yet.
+
 The game's own crash reporter may also appear after a crash. That one reports to the game's developers; the W3CrashFix page is only about this mod. You can use both.
 
 If you don't want anything to open after a crash, set `OpenReportPage=0` in `W3CrashFix.ini` (see [Settings](#settings)). The crash log is still saved.
 
 ### Uninstall
 
-Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`. You can also delete `W3CrashFix.ini` and, if they exist, `W3CrashFix.removed`, `W3CrashFix-report.html`, `W3CrashFix.activity.log`, `W3CrashFix.activity.previous.log` and the folder `W3CrashFix crash report`. The installer's Uninstall removes all of these, so no traces of the mod are left.
+Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3CrashFix.asi` (ASI) from `bin\x64_dx12`. You can also delete `W3CrashFix.ini` and, if they exist, `W3CrashFix.removed`, `W3CrashFix-report.html`, `W3CrashFix-send-log.html`, `W3CrashFix.activity.log`, `W3CrashFix.activity.previous.log` and the folder `W3CrashFix crash report`. The installer's Uninstall removes all of these, so no traces of the mod are left.
 
 ## Technical details
 
@@ -170,6 +176,28 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 
 ## Changelog
 
+### 1.8.1-5.0.16
+
+A small correction release: internal corrections in the source and the settings file's note. The fix and everything you see are unchanged.
+
+**Do I need to update?** No, 1.8.0 works just as well. If you update anyway, nothing changes for you.
+
+### 1.8.0-5.0.16
+
+Thanks to everyone who sent a crash log. Twelve logs from nine players have come in so far, and they shaped this release. None of them was the crash this fix is made for: in every one the fix was active and the heaps stayed low. One of them was a 97-minute session on the GOG version.
+
+- Crash report: the **call stack has no limit** any more. Until now it stopped after 16 places; in one report a script extender showed up at place 13, and what led to it was cut off.
+- Crash report: the **date and time of the crash** are at the top of the crash log and on the report page. If you open the report page again later, it says that it belongs to an older crash. One player sent the same log twice, and there was no way to tell.
+- New: **send your log without a crash.** The mod writes `W3CrashFix-send-log.html` next to itself at every game start. Open it, and the same Send button uploads your `W3CrashFix.activity.log`. Every log is welcome, with or without other mods; logs from the **Epic version** are especially helpful. See [If the game crashes](#if-the-game-crashes).
+- Report page: every crash log is welcome, also without a test. It helps even more if you also try the same part on a clean game, without your other mods.
+- **Ready for game patches that only move code.** The mod now checks every function it uses from the first byte to the last. If a game update only moves them to other places, it finds them there and the fix keeps working without a new version. If the code itself changed, the fix turns itself off as before.
+- Installer: Uninstall also removes the send page.
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** It's recommended. The fix itself is the same, but 1.8.0 keeps working after a game patch that only moves code, and its crash reports tell more.
+
+And no, we're not playing GTA 6. We've got better things to do. 😉
+
 ### 1.7.0-5.0.16
 
 Thanks to everyone who sent a crash log. The first logs that came in through the report page already led to this release: they showed where the crash report could tell more. So far seven crash reports from six players have arrived. None of them was the crash this fix is made for, and every one of them helped.
@@ -177,7 +205,7 @@ Thanks to everyone who sent a crash log. The first logs that came in through the
 - Crash report: it now lists **all** your in-game mods, with their number. Before, a long list was cut off after about 600 characters, so with many mods it didn't show which ones were enabled.
 - Crash report: it now also shows the **call stack**, a short list of places in the game's code that led to the crash. Two players' crashes stopped at the same place, where the game halts itself when something goes wrong; only the code that led there can show what went wrong.
 - Crash report: the verdict also recognises the descriptor heap crash when it shows up one step deeper in the game's code.
-- You can now **personalise your report id**. `W3CrashFix.ini` explains how, right above the `ReportId` line: add your own text before or after the id, for example `MyName_5E19AF37C0802875`, and keep the 16 characters of the id itself, so your new crash logs can still be matched with the ones you sent before. Before this release, the mod replaced any id it didn't make itself with a new random one.
+- You can now **personalise your report id**. `W3CrashFix.ini` explains how, right above the `ReportId` line: add your own text before or after the id, for example `MyName_0123456789ABCDEF`, and keep the 16 characters of the id itself, so your new crash logs can still be matched with the ones you sent before. Before this release, the mod replaced any id it didn't make itself with a new random one.
 - Installer: **Uninstall leaves no traces**: it now also removes the activity logs.
 - After a crash, the small folder window gets a little more time and up to four requests to stay on top of the browser. Windows can still refuse it, but less often.
 - Clearer wording about the standalone version: only one `dinput8.dll` can be in the folder.
@@ -275,7 +303,9 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 and 1.7.0 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 to 1.8.1 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
+
+**Who did what.** The bug was only found because I let Claude analyse my crash dumps, and the technical explanations in this README were drafted by Claude. Since version 1.0.0, most changes were my ideas and every decision was mine; Claude worked out the details and wrote the code. For example, I wanted the mod to open the crash log after a crash and let players send it to me; showing that in a single browser page was Claude's idea, so a crashing game opens one window instead of several.
 
 ## Support
 

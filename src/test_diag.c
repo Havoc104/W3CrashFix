@@ -18,6 +18,57 @@ CODE static const unsigned char f_createpage[] = {0x48,0x89,0x5c,0x24,0x10,0x57,
 CODE static const unsigned char f_vecgrow[]    = {0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x6c,0x24,0x18,0x48,0x89, 0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,
                                                   0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90, 0xc3};
 
+// "Finding the code" tests (arguments "reloc" / "relocdup" <path of the real witcher3.exe 5.0.16>, since 1.8.0): before
+// the mod is loaded, the six functions of the real game are copied from that file into 'area', a block in this
+// program's own code, at other places than in the game, and their calls to each other are set to reach the copies.
+// The mod must then find them, report them as moved and put its detour on the copy of ensure. "relocdup" also puts a
+// second copy of ensure there: two places with the same code, so the mod must leave everything alone. The game's code
+// is only read from the installed game at test time; none of it is in this source.
+CODE static const unsigned char area[0x1800] = {0xcc};
+// 'area' is declared const (so the compiler puts it in the code section), which also lets the compiler assume it never
+// changes and drop or fold the writes and reads below. Everything goes through this volatile pointer instead.
+static unsigned char *volatile g_area = (unsigned char *)area;
+static const struct { unsigned rva, len; } g_fn[6] = {
+    {0x2809760, 0xA9}, {0x2809810, 0x9C}, {0x2809BB0, 0x222}, {0x2809EF0, 0x103}, {0x28080D0, 0xE6}, {0x280ABA0, 0x1EB}};
+static const struct { int from; unsigned at; int to; } g_call[] = {
+    {0, 0x36, 4}, {0, 0x7D, 2}, {0, 0x92, 3}, {1, 0x27, 4}, {1, 0x69, 2}, {1, 0x83, 3}, {5, 0x159, 0}};
+static unsigned g_pos[6];
+static int copy_game_code(const wchar_t *exe, int dup) {
+    HANDLE f = CreateFileW(exe, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) { printf("reloc: cannot open the game executable (%lu)\n", GetLastError()); return 0; }
+    DWORD size = GetFileSize(f, NULL), got = 0;
+    unsigned char *d = HeapAlloc(GetProcessHeap(), 0, size);
+    if (!d || !ReadFile(f, d, size, &got, NULL) || got != size) { CloseHandle(f); puts("reloc: cannot read the game executable"); return 0; }
+    CloseHandle(f);
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(d + ((IMAGE_DOS_HEADER *)d)->e_lfanew);
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    DWORD old;
+    unsigned char *a = g_area;
+    if (!VirtualProtect(a, sizeof area, PAGE_EXECUTE_READWRITE, &old)) { puts("reloc: VirtualProtect failed"); return 0; }
+    memset(a, 0xcc, sizeof area);
+    unsigned pos = 0x40;
+    for (int i = 0; i < 6; i++) {                     // in reverse order of the game, with gaps: every place is different
+        int k = 5 - i;
+        unsigned fo = 0;
+        for (unsigned s = 0; s < nt->FileHeader.NumberOfSections; s++)
+            if (g_fn[k].rva >= sec[s].VirtualAddress && g_fn[k].rva < sec[s].VirtualAddress + sec[s].SizeOfRawData)
+                fo = sec[s].PointerToRawData + (g_fn[k].rva - sec[s].VirtualAddress);
+        if (!fo || fo + g_fn[k].len > size) { puts("reloc: function outside the file"); return 0; }
+        g_pos[k] = pos;
+        memcpy(a + pos, d + fo, g_fn[k].len);
+        pos += (g_fn[k].len + 0x30) & ~0xfu;
+    }
+    if (dup) memcpy(a + pos, a + g_pos[0], g_fn[0].len);   // a second ensure
+    for (unsigned c = 0; c < sizeof g_call / sizeof g_call[0]; c++) {
+        int rel = (int)g_pos[g_call[c].to] - (int)(g_pos[g_call[c].from] + g_call[c].at + 4);
+        memcpy(a + g_pos[g_call[c].from] + g_call[c].at, &rel, 4);
+    }
+    VirtualProtect(a, sizeof area, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), a, sizeof area);
+    printf("reloc: ensure copied to w3+0x%X\n", (unsigned)(a + g_pos[0] - (unsigned char *)GetModuleHandleW(NULL)));
+    return 1;
+}
+
 // License dialog test (arguments "accept" / "decline"): find the mod's dialogs in this process and press their buttons.
 // Control ids as in w3crashfix.c: 101 OK button, 102 "I decline" checkbox.
 static HWND g_found;
@@ -70,11 +121,18 @@ static DWORD WINAPI frozen_window(LPVOID unused) {
 
 int wmain(int argc, wchar_t **argv) {
     if (argc < 2) { puts("usage: witcher3.exe <path to W3CrashFix.asi or dinput8.dll>"); return 2; }
-    volatile const unsigned char *keep[] = {pad0, f_ensure, f_forcenew, f_invalidate, f_createpage, f_vecgrow}; (void)keep;
+    volatile const unsigned char *keep[] = {pad0, f_ensure, f_forcenew, f_invalidate, f_createpage, f_vecgrow, area}; (void)keep;
+    int reloc = argc > 3 && (!wcscmp(argv[2], L"reloc") || !wcscmp(argv[2], L"relocdup"));
+    if (reloc && !copy_game_code(argv[3], !wcscmp(argv[2], L"relocdup"))) return 3;
     HMODULE m = LoadLibraryW(argv[1]);
     if (!m) { printf("LoadLibrary failed %lu\n", GetLastError()); return 1; }
     Sleep(300);
     puts("loaded");
+    if (reloc) {                                             // did the mod put its detour (mov rax, imm64) on the copy of ensure?
+        volatile const unsigned char *e = g_area + g_pos[0];
+        printf("reloc: detour on the copy of ensure: %s\n", e[0] == 0x48 && e[1] == 0xB8 ? "yes" : "no");
+        return 0;
+    }
     if (argc > 2 && !wcscmp(argv[2], L"accept")) {           // press OK
         // The "game window": a second thread asks for a window right away. The mod must hold it until OK.
         HANDLE th = CreateThread(NULL, 0, make_window, NULL, 0, NULL);

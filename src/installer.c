@@ -23,7 +23,7 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"1.7.0-5.0.16"
+#define W3CF_VERSION   L"1.8.1-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
@@ -261,6 +261,7 @@ static int accepted_left(const wchar_t *root) {                 // settings of t
     for (int i = 0; i < 4; i++) { bin_file(root, g_logFiles[i], p); if (exists(p)) return 1; }
     bin_file(root, L"W3CrashFix-report.html", p);  if (exists(p)) return 1;   // what a crash report left
     bin_file(root, L"W3CrashFix crash report", p); if (exists(p)) return 1;
+    bin_file(root, L"W3CrashFix-send-log.html", p); if (exists(p)) return 1;  // the send page (written at every start)
     return 0;
 }
 static DWORD install_standalone(const wchar_t *root) {
@@ -293,6 +294,8 @@ static DWORD uninstall_all(const wchar_t *root) {
     // Since 1.7.0 the activity logs go too (Onno, 18 Nov 2026: Uninstall left them behind), also the names up to
     // 1.5.0. A log that cannot be removed (the game still running) does not count as a failed uninstall.
     for (int i = 0; i < 4; i++) { bin_file(root, g_logFiles[i], p); if (exists(p)) DeleteFileW(p); }
+    // The send page for the activity log (Onno, 19 Nov 2026), written by the mod at every game start.
+    bin_file(root, L"W3CrashFix-send-log.html", p); if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
     return a ? a : b ? b : c ? c : d;
 }
 
