@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <dbghelp.h>     // only the types of MiniDumpWriteDump; dbghelp.dll is loaded at run time, see "crash dump"
 
 // ---------------------------------------------------------------- dinput8 proxy
 static HMODULE g_real;
@@ -86,6 +87,11 @@ static int tab_del(void *p, Ent *out) {
 
 // ---------------------------------------------------------------- video memory
 static IDXGIAdapter3 *g_adapter;
+static ID3D12Device *g_dev;                          // the game's D3D12 device (set by init; see "GPU state" below)
+static char g_driver[64] = "unknown";                // graphics driver version (see init)
+static int g_dredWanted, g_dredOn;                   // GpuCrashDetails=1 in W3CrashFix.ini / DRED really switched on in time
+static int g_dumpWanted;                             // CrashDump=1 in W3CrashFix.ini (see "crash dump")
+static int g_dumpDone;                               // this crash's dump was written (see "crash dump")
 static void vram(char *out, size_t n) {
     DXGI_QUERY_VIDEO_MEMORY_INFO l = {0}, nl = {0};
     if (g_adapter) {
@@ -112,6 +118,147 @@ static void summary(const char *why) {
          g_live[0][0], g_live[1][0], g_live[2][0], g_live[3][0],
          g_created[0][1], g_created[1][1], g_failed, g_rescued, g_retiredNormal, v);
     ReleaseSRWLockShared(&g_lk);
+}
+
+// ---------------------------------------------------------------- events before a crash (since 2.0.0)
+// Onno, 19 Nov 2026 ("all of them", idea 5): many crashes come right after a loading screen, a fast travel, a save load
+// or an alt-tab (Onno's own second crash in Nov 2026 came on fast travel). The mod can't see those directly, but it sees
+// their traces: graphics memory jumps by a gigabyte or more within seconds at a load, and the game window loses or
+// gets the focus at an alt-tab. Every 2 seconds the work thread looks; what it notices goes into the log as
+// "event: ..." and the last 8 into the crash summary ("Before the crash:"). Reading only, no hooks.
+#define EV_N 8
+static struct { DWORD t; char s[120]; } g_ev[EV_N];
+static volatile LONG g_evCount;
+static void event_add(const char *fmt, ...) {
+    LONG i = g_evCount % EV_N;
+    va_list a; va_start(a, fmt);
+    vsnprintf(g_ev[i].s, sizeof g_ev[i].s, fmt, a);
+    va_end(a);
+    g_ev[i].t = GetTickCount();
+    InterlockedIncrement(&g_evCount);
+    logf("event: %s", g_ev[i].s);
+}
+static void watch_events(void) {
+    // graphics memory: a window of the last 15 samples (30 s); a change of 1 GB or more inside it is one event
+    static unsigned long long mb[15]; static DWORD at[15]; static int n;
+    if (g_adapter) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO l = {0};
+        if (SUCCEEDED(IDXGIAdapter3_QueryVideoMemoryInfo(g_adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &l))) {
+            if (n == 15) { memmove(mb, mb + 1, 14 * sizeof mb[0]); memmove(at, at + 1, 14 * sizeof at[0]); n = 14; }
+            mb[n] = l.CurrentUsage >> 20; at[n] = GetTickCount(); n++;
+            int lo = 0, hi = 0;
+            for (int i = 1; i < n; i++) { if (mb[i] < mb[lo]) lo = i; if (mb[i] > mb[hi]) hi = i; }
+            if (mb[hi] >= mb[lo] + 1000) {
+                int a = lo < hi ? lo : hi, b = lo < hi ? hi : lo, rose = lo < hi;
+                // Since test49 (Onno, 20 Nov 2026: "yes"): a load climbs in steps over several seconds, and each step of
+                // 1 GB or more used to be an event of its own (four lines for one loading screen in Onno's F9 test).
+                // A jump in the same direction within 10 s of the previous one, while that is still the newest event,
+                // now extends it: "rose from <first start> to <new end> within <whole time>".
+                static int lastDir; static DWORD lastEnd, lastStart; static unsigned long long lastFrom; static LONG lastSlot = -1;
+                LONG newest = g_evCount - 1;
+                if (lastSlot >= 0 && newest == lastSlot && lastDir == (rose ? 1 : -1) && at[a] - lastEnd <= 10000) {
+                    LONG i = lastSlot % EV_N;
+                    snprintf(g_ev[i].s, sizeof g_ev[i].s, "graphics memory %s from %llu to %llu MB within %lu s (a loading screen, fast travel, save load or menu?)",
+                             rose ? "rose" : "fell", lastFrom, mb[b], (unsigned long)((at[b] - lastStart) / 1000));
+                    g_ev[i].t = GetTickCount();
+                    logf("event (continued): %s", g_ev[i].s);
+                } else {
+                    event_add("graphics memory %s from %llu to %llu MB within %lu s (a loading screen, fast travel, save load or menu?)",
+                              rose ? "rose" : "fell", mb[a], mb[b], (unsigned long)((at[b] - at[a]) / 1000));
+                    lastSlot = g_evCount - 1; lastFrom = mb[a]; lastStart = at[a];
+                }
+                lastDir = rose ? 1 : -1; lastEnd = at[b];
+                mb[0] = mb[n - 1]; at[0] = at[n - 1]; n = 1;   // start a new window
+            }
+        }
+    }
+    // the game window in front or not (alt-tab, another program, the game's own crash dialog)
+    static int was = -1;
+    DWORD pid = 0; HWND fg = GetForegroundWindow();
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    int now = fg && pid == GetCurrentProcessId();
+    if (was != -1 && now != was)
+        event_add(now ? "the game window came to the front" : "the game window went to the background (alt-tab or another window)");
+    was = now;
+}
+// "Before the crash:" for the summary: the last events, newest first, with how long before the crash they were
+static void fmt_events(char *out, int sz) {
+    LONG c = g_evCount; int n = 0; DWORD now = GetTickCount();
+    out[0] = 0;
+    for (int k = 0; k < EV_N && k < c && n < sz - 1; k++) {
+        LONG i = (c - 1 - k) % EV_N;
+        DWORD ago = (now - g_ev[i].t) / 1000;
+        int w = ago < 120 ? snprintf(out + n, sz - n, "%s%lu s ago: %s", k ? "; " : "", (unsigned long)ago, g_ev[i].s)
+                          : snprintf(out + n, sz - n, "%s%lu min ago: %s", k ? "; " : "", (unsigned long)(ago / 60), g_ev[i].s);
+        if (w < 0) break;
+        n += w < sz - n ? w : sz - n - 1;
+    }
+    if (!out[0]) snprintf(out, sz, "nothing noticed (no loading jump in graphics memory, no alt-tab)");
+}
+
+// ---------------------------------------------------------------- the game's render settings (since 2.0.0)
+// Onno, 20 Nov 2026 ("Yes, write it"), after the check of all crash reports: the game's descriptor page allocator (the
+// code with the leak) ran in only one player's sessions, and fast on Onno's PC with path tracing; everywhere else it
+// never needed a page. Ray tracing or path tracing is the likely difference, but the logs did not say which settings
+// were on. So the mod now logs them: it reads the game's own settings file, Documents\The Witcher 3\dx12user.settings,
+// and writes the lines that matter (ray tracing, path tracing, upscaler, frame generation, resolution, screen mode) to
+// the log as "game settings:", and into the crash summary. Reading only; the file's path is not logged (it holds the
+// Windows user name). It is read at start and again every 30 s when the file changed (the game writes it when the
+// player changes a setting), never during a crash.
+static char g_gameSettings[512] = "not read yet";
+static void game_settings(void) {
+    static wchar_t path[MAX_PATH]; static int tried; static FILETIME seen;
+    if (!tried) {
+        tried = 1;
+        typedef HRESULT (WINAPI *SHGFP_t)(HWND, int, HANDLE, DWORD, LPWSTR);
+        HMODULE sh = LoadLibraryW(L"shell32.dll");   // on the work thread, never in DllMain
+        SHGFP_t gfp = sh ? (SHGFP_t)GetProcAddress(sh, "SHGetFolderPathW") : NULL;
+        wchar_t docs[MAX_PATH];
+        if (gfp && SUCCEEDED(gfp(NULL, 0x0005 /* CSIDL_PERSONAL: Documents, also when moved to OneDrive */, NULL, 0, docs))
+            && lstrlenW(docs) < MAX_PATH - 48) { lstrcpyW(path, docs); lstrcatW(path, L"\\The Witcher 3\\dx12user.settings"); }
+    }
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!path[0] || !GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+        if (seen.dwLowDateTime != 1) {
+            lstrcpyA(g_gameSettings, "not found (no Documents\\The Witcher 3\\dx12user.settings)");
+            logf("game settings: %s", g_gameSettings);
+            seen.dwLowDateTime = 1; seen.dwHighDateTime = 0;
+        }
+        return;
+    }
+    if (!CompareFileTime(&fa.ftLastWriteTime, &seen)) return;    // unchanged since the last look
+    int first = !seen.dwLowDateTime && !seen.dwHighDateTime;
+    seen = fa.ftLastWriteTime;
+    static char buf[65536];
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD got = 0;
+    if (!ReadFile(f, buf, sizeof buf - 1, &got, NULL)) got = 0;
+    CloseHandle(f);
+    buf[got] = 0;
+    static const char *const keys[] = { "EnableRT", "PTEnable", "EnableRtRadiance", "RTAOEnabled", "EnableDLSSRR", "DLSSQuality",
+        "DLSSGMode", "DLSSGNumFramesToGenerate", "FSR2Quality", "FSRFramegen", "XESSQuality", "XessFrameGeneration",
+        "Resolution", "FullScreenMode" };
+    char vals[sizeof keys / sizeof keys[0]][40] = {{0}};
+    for (char *l = buf; *l; ) {
+        char *e = l; while (*e && *e != '\n' && *e != '\r') e++;
+        char c = *e; *e = 0;
+        char *eq = strchr(l, '=');
+        if (eq && *l != '[' && *l != ';')
+            for (size_t k = 0; k < sizeof keys / sizeof keys[0]; k++)
+                if ((size_t)(eq - l) == strlen(keys[k]) && !strncmp(l, keys[k], eq - l)) {
+                    const char *v = eq + 1; if (*v == '"') v++;
+                    snprintf(vals[k], sizeof vals[k], "%s", v);
+                    char *q = strchr(vals[k], '"'); if (q) *q = 0;
+                }
+        *e = c; l = e; while (*l == '\n' || *l == '\r') l++;
+    }
+    int on = !strcmp(vals[0], "true"), pt = !strcmp(vals[1], "true");
+    int n = snprintf(g_gameSettings, sizeof g_gameSettings, "ray tracing %s, path tracing %s |",
+                     on ? "ON" : vals[0][0] ? "off" : "?", pt ? "ON" : vals[1][0] ? "off" : "?");
+    for (size_t k = 0; k < sizeof keys / sizeof keys[0] && n < (int)sizeof g_gameSettings - 60; k++)
+        if (vals[k][0]) n += snprintf(g_gameSettings + n, sizeof g_gameSettings - n, " %s=%s", keys[k], vals[k]);
+    logf("game settings%s: %s", first ? "" : " changed", g_gameSettings);
 }
 
 // ---------------------------------------------------------------- hooks
@@ -271,7 +418,7 @@ static volatile LONG g_fixActive;                    // detour installed AND the
 // Built without it, g_accepted is always 1 and the mod starts working right away.
 static volatile LONG g_accepted = 1;                 // the user accepted the license (now or in an earlier session)
 #ifdef W3_CRASHTEST
-static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash
+static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash, 4 = GPU device removed (F9)
 #endif
 typedef void (*Invalidate_t)(unsigned char *alloc, void *page);
 typedef void *(*CreatePage_t)(unsigned char *alloc);
@@ -505,12 +652,12 @@ static void install_fix(void) {
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "1.8.1-5.0.16"
+#define W3CF_VERSION "2.0.0-5.0.16"
 static const char *g_flavor = "";
-static char g_adapterName[128] = "unknown";
+static char g_adapterName[192] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
 static volatile LONG g_crashed, g_noticed;
-static char g_crSum[4096 + 65536], g_crEsc[6144], g_crBuf[65536];   // the summary holds the call stack (g_crStack)
+static char g_crSum[12288 + 65536], g_crEsc[6144], g_crBuf[65536];   // the summary holds the call stack (g_crStack)
 
 static const char *exc_name(DWORD c) {
     switch (c) {
@@ -576,21 +723,66 @@ static void fmt_regs(const CONTEXT *c) {
 // stack pointer up by at least 8 bytes and stay below the top of the stack, so it ends at the top at the latest. The
 // text has room for some 500 entries; on a stack deeper than that, the rest is still counted and the last entry says
 // how many more there were.
-static char g_crStack[65536];
+// Since 2.0.0 (Onno, 19 Nov 2026, "all of them", ideas 4 and 6):
+//  - A crash at address 0 (the game called through an empty pointer) used to give no call stack at all, because the
+//    walk started at address 0 and stopped there. Such a call leaves its return address on top of the stack, so the
+//    walk now goes on from there like for any function without unwind data: the second entry names the caller.
+//  - Every file that shows up in the call stack is listed once with its version ("Files in the call stack:"), read
+//    from the version resource of the file as it is loaded in memory (no file is opened). Then reports of one crash
+//    can show whether all players had the same, perhaps old, version of a script extender or other DLL.
+static char g_crStack[65536], g_crFiles[1024];
+static int g_crOurs;            // W3CrashFix's own code is at the crash address or anywhere in the call stack (see the verdict)
 static DWORD64 g_crFrames[16]; static int g_crNFrames;   // the first addresses as numbers, for the verdict (it needs 4)
+static void mod_version(HMODULE m, char *out, int sz) {
+    out[0] = 0;
+    HRSRC r = FindResourceW(m, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16));   // 16 = RT_VERSION
+    HGLOBAL g = r ? LoadResource(m, r) : NULL;
+    const unsigned char *p = g ? (const unsigned char *)LockResource(g) : NULL;
+    DWORD len = r ? SizeofResource(m, r) : 0;
+    if (!p || len < 64) return;
+    for (DWORD o = 0; o + sizeof(VS_FIXEDFILEINFO) <= len && o < 256; o += 4) {
+        const VS_FIXEDFILEINFO *f = (const VS_FIXEDFILEINFO *)(p + o);
+        if (f->dwSignature != 0xFEEF04BD) continue;
+        snprintf(out, sz, "%u.%u.%u.%u", (unsigned)HIWORD(f->dwFileVersionMS), (unsigned)LOWORD(f->dwFileVersionMS),
+                 (unsigned)HIWORD(f->dwFileVersionLS), (unsigned)LOWORD(f->dwFileVersionLS));
+        return;
+    }
+}
 static void fmt_stack(const CONTEXT *start) {
     CONTEXT c = *start;
     NT_TIB *tib = (NT_TIB *)NtCurrentTeb();
     DWORD64 lo = (DWORD64)(ULONG_PTR)tib->StackLimit, hi = (DWORD64)(ULONG_PTR)tib->StackBase;
-    int n = 0, i = 0, more = 0;
-    g_crStack[0] = 0;
-    g_crNFrames = 0;
-    for (; c.Rip; i++) {
+    int n = 0, i = 0, more = 0, fn = 0;
+    HMODULE files[24]; int nfiles = 0;
+    HMODULE self = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)(void *)fmt_stack, &self);
+    g_crStack[0] = 0; g_crFiles[0] = 0;
+    g_crNFrames = 0; g_crOurs = 0;
+    for (; c.Rip || i == 0; i++) {
         if (g_crNFrames < (int)(sizeof g_crFrames / sizeof g_crFrames[0])) g_crFrames[g_crNFrames++] = c.Rip;
         if (n < (int)sizeof g_crStack - 300) {
-            char at[192]; where((void *)(ULONG_PTR)c.Rip, at, sizeof at);
+            char at[192];
+            if (!c.Rip) lstrcpyA(at, "0x0 (an empty address: the game called through an empty pointer)");
+            else where((void *)(ULONG_PTR)c.Rip, at, sizeof at);
             n += snprintf(g_crStack + n, sizeof g_crStack - n, "%s%s", i ? " < " : "", at);
         } else more++;
+        HMODULE m = NULL;
+        if (c.Rip && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                        (LPCWSTR)(ULONG_PTR)c.Rip, &m) && m && self && m == self) g_crOurs = 1;
+        if (c.Rip && nfiles < 24 && m) {
+            int known = 0;
+            for (int k = 0; k < nfiles; k++) if (files[k] == m) known = 1;
+            if (!known) {
+                files[nfiles++] = m;
+                char path[MAX_PATH], ver[48]; DWORD pl = GetModuleFileNameA(m, path, sizeof path);
+                const char *file = path;
+                if (pl > 0 && pl < sizeof path) { for (const char *q = path; *q; q++) if (*q == '\\' || *q == '/') file = q + 1; }
+                else lstrcpyA(path, "?");
+                mod_version(m, ver, sizeof ver);
+                if (fn < (int)sizeof g_crFiles - 100)
+                    fn += snprintf(g_crFiles + fn, sizeof g_crFiles - fn, "%s%s %s", nfiles > 1 ? ", " : "", file, ver[0] ? ver : "(no version)");
+            }
+        }
         if (c.Rsp < lo || c.Rsp + 8 > hi || (c.Rsp & 7)) break;
         DWORD64 prevRsp = c.Rsp, imageBase = 0;
         PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(c.Rip, &imageBase, NULL);
@@ -600,6 +792,7 @@ static void fmt_stack(const CONTEXT *start) {
     }
     if (more) n += snprintf(g_crStack + n, sizeof g_crStack - n, " < ... and %d more (too many to list)", more);
     if (!g_crStack[0]) lstrcpyA(g_crStack, "not available");
+    if (!g_crFiles[0]) lstrcpyA(g_crFiles, "none found");
 }
 
 // ---------------------------------------------------------------- settings: W3CrashFix.ini
@@ -608,6 +801,10 @@ static void fmt_stack(const CONTEXT *start) {
 //   LicenseAccepted=MIT-2      the license text the user accepted (W3CF_LICENSE_ID); written by the mod or the installer
 //   ReportId=0123456789ABCDEF  the random report id (see below)
 //   OpenReportPage=1           0 = after a crash only the crash log is saved; no page and no folder window open
+//   GpuCrashDetails=0          1 = switch on D3D12's DRED, so a GPU crash report says which GPU work was unfinished
+//                              (since 2.0.0; off by default; no measurable frame-rate cost in Onno's test; see "GPU state")
+//   CrashDump=0                1 = a crash also writes W3CrashFix.crash.dmp, a Windows minidump (since 2.0.0; off by
+//                              default because it can hold bits of the game's memory; see "crash dump")
 // Files of earlier versions are taken over once and then removed, so nobody is asked again because of this change:
 // W3CrashFix.accepted (1.5.0), W3CrashFix.noreport (an empty file users could make), W3CrashFix.id (test builds).
 static wchar_t g_ini[MAX_PATH];
@@ -655,6 +852,10 @@ static void load_settings(void) {
     }
     ini_get(L"OpenReportPage", v, sizeof v);
     g_openPage = strcmp(v, "0") != 0;
+    ini_get(L"GpuCrashDetails", v, sizeof v);
+    g_dredWanted = strcmp(v, "1") == 0;
+    ini_get(L"CrashDump", v, sizeof v);
+    g_dumpWanted = strcmp(v, "1") == 0;
 }
 
 // ---------------------------------------------------------------- in-game mods and the report id
@@ -733,10 +934,17 @@ static char g_reportId[48] = "none";
 // above the ReportId line in W3CrashFix.ini. Windows' own ini functions skip lines that begin with ';' and keep them
 // when they change a value. Added once, at game start (never on the crash path); a file in another encoding than
 // the plain one Windows writes is left alone.
+// Since 2.0.0 (Onno, 20 Nov 2026: "it should be known in the ini that the custom report id can be useful for a user with
+// multiple installations of the game. they can make themselves known this way, the 16 digit hex number will distinguish
+// their installations"): one more line. Every installation has its own W3CrashFix.ini and so its own random id; the
+// same own text in each shows the reports come from one person. Added to notes written by earlier versions too
+// (right above their "; Allowed:" line), see ini_note_report_id.
+#define G_ID_MULTI "; More than one installation of the game? Use the same text in each, for example MyName_ before each id: your text shows the reports are yours, and the 16 characters tell your installations apart.\r\n"
 static const char g_idNote[] =
     "; ReportId: lets the mod's author recognise several crash reports from this machine/installation.\r\n"
     "; You may personalise it: add your own text before or after the id, for example MyName_0123456789ABCDEF.\r\n"
     "; Keep the 16 characters of the id itself, then your new crash logs can still be matched with the ones you sent before.\r\n"
+    G_ID_MULTI
     "; Allowed: letters, digits, _ and -, 40 characters at most. Anything else is replaced by a new random id.\r\n";
 // A one-line notice right above the ReportId line when the id the user wrote there could not be used (Onno, 18 Nov
 // 2026: "the user should be notified that their id is invalid ... without revealing the reason"). It names the id
@@ -803,7 +1011,20 @@ static void ini_note_report_id(void) {
         f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, buf, got, &w, NULL); CloseHandle(f); }
     }
-    if (strstr(buf, "; ReportId: ")) return;                        // the note is there already
+    if (strstr(buf, "; ReportId: ")) {                              // the note is there already
+        // a note of an earlier version: add the 2.0.0 line about several installations above its "; Allowed:" line
+        char *al = strstr(buf, "\n; Allowed: ");
+        if (strstr(buf, "; More than one installation") || !al) return;
+        al++;
+        f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f == INVALID_HANDLE_VALUE) return;
+        DWORD w;
+        WriteFile(f, buf, (DWORD)(al - buf), &w, NULL);
+        WriteFile(f, G_ID_MULTI, sizeof G_ID_MULTI - 1, &w, NULL);
+        WriteFile(f, al, (DWORD)strlen(al), &w, NULL);
+        CloseHandle(f);
+        return;
+    }
     char *at = strstr(buf, "\nReportId=");
     if (at) at++; else if (!strncmp(buf, "ReportId=", 9)) at = buf; else return;
     f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -983,6 +1204,10 @@ static DWORD WINAPI report_windows(LPVOID unused) {
         if (fw && GetMonitorInfoW(MonitorFromWindow(fw, MONITOR_DEFAULTTONEAREST), &mi)) {
             int ww = mi.rcWork.right - mi.rcWork.left, wh = mi.rcWork.bottom - mi.rcWork.top;
             int cx = ww / 3 < 520 ? 520 : ww / 3, cy = wh / 4 < 260 ? 260 : wh / 4;
+            // With a crash dump next to the log (CrashDump=1) the folder holds two files, and at a quarter of the
+            // screen the crash log, the file that matters, was half cut off below the dump (Onno's test, 20 Nov 2026).
+            // Then the window is a third of the screen high, at least 360 pixels.
+            if (g_dumpDone) cy = wh / 3 < 360 ? 360 : wh / 3;
             if (cx > ww) cx = ww;
             if (cy > wh) cy = wh;
             if (IsZoomed(fw) || IsIconic(fw)) ShowWindowAsync(fw, SW_RESTORE);
@@ -1011,6 +1236,182 @@ static DWORD WINAPI report_windows(LPVOID unused) {
     return 0;
 }
 
+// ---------------------------------------------------------------- GPU state (since 2.0.0)
+// Onno, 19 Nov 2026: "yes write it", after the analysis of the crash at witcher3.exe+0x1F103A3: there the graphics
+// driver drops the device and the game stops itself with "Gpu Crash for unknown reasons". Five players had it. To tell
+// the possible causes apart (a timeout, a page fault, a driver error), a crash report now also says:
+//  1. whether the GPU device is still working, and if not, why Windows removed it (ID3D12Device::GetDeviceRemovedReason);
+//  2. with GpuCrashDetails=1 in W3CrashFix.ini (off by default; it may cost a little performance, none measurable in Onno's test of 20 Nov 2026): D3D12's own
+//     "Device Removed Extended Data" (DRED), which records which GPU work was unfinished and, for a page fault, the
+//     GPU address and the resources around it. DRED must be switched on before the game creates its device.
+// Crash path safety (see "test28" in next-release.md): the questions to D3D12 run on a thread of their own and the
+// crash report waits for them at most 1.5 s; if they don't answer, the report says so and goes on.
+static void dred_name(const char *a, const WCHAR *w, char *out, int n) {
+    out[0] = 0;
+    if (a && readable((const unsigned char *)a, 1)) { snprintf(out, n, "%.60s", a); return; }
+    if (w && readable((const unsigned char *)w, 2)) WideCharToMultiByte(CP_UTF8, 0, w, -1, out, n, NULL, NULL);
+    out[n - 1] = 0;
+}
+static const char *dred_op(unsigned op) {
+    static const char *n[] = { "SetMarker", "BeginEvent", "EndEvent", "DrawInstanced", "DrawIndexedInstanced", "ExecuteIndirect",
+        "Dispatch", "CopyBufferRegion", "CopyTextureRegion", "CopyResource", "CopyTiles", "ResolveSubresource",
+        "ClearRenderTargetView", "ClearUnorderedAccessView", "ClearDepthStencilView", "ResourceBarrier", "ExecuteBundle",
+        "Present", "ResolveQueryData", "BeginSubmission", "EndSubmission", "DecodeFrame", "ProcessFrames",
+        "AtomicCopyBufferUint", "AtomicCopyBufferUint64", "ResolveSubresourceRegion", "WriteBufferImmediate", "DecodeFrame1",
+        "SetProtectedResourceSession", "DecodeFrame2", "ProcessFrames1", "BuildRaytracingAccelerationStructure",
+        "EmitRaytracingAccelerationStructurePostbuildInfo", "CopyRaytracingAccelerationStructure", "DispatchRays",
+        "InitializeMetaCommand", "ExecuteMetaCommand", "EstimateMotion", "ResolveMotionVectorHeap", "SetPipelineState1",
+        "InitializeExtensionCommand", "ExecuteExtensionCommand", "DispatchMesh", "EncodeFrame", "ResolveEncoderOutputMetadata" };
+    return op < sizeof n / sizeof n[0] ? n[op] : "?";
+}
+static char g_gpuState[1536] = "not checked";
+static int g_gpuLen;
+// appends to g_gpuState; never writes past its end, however long the text
+static void gpu_add(const char *fmt, ...) {
+    int room = (int)sizeof g_gpuState - g_gpuLen;
+    if (room <= 1) return;
+    va_list a; va_start(a, fmt);
+    int w = vsnprintf(g_gpuState + g_gpuLen, room, fmt, a);
+    va_end(a);
+    if (w > 0) g_gpuLen += w < room ? w : room - 1;
+}
+static DWORD WINAPI gpu_query(LPVOID unused) {
+    (void)unused;
+    g_gpuLen = 0; g_gpuState[0] = 0;
+    ID3D12Device *d = g_dev;
+    if (!d || !readable((const unsigned char *)d, sizeof(void *)) || !readable(*(const unsigned char **)d, 0x140)) {
+        gpu_add("not known (no D3D12 device seen)");
+        return 0;
+    }
+    HRESULT r = ID3D12Device_GetDeviceRemovedReason(d);
+    if (r == S_OK) { gpu_add("working (the graphics card did not drop out)"); return 0; }
+    const char *why =
+        r == (HRESULT)0x887A0006 ? "DEVICE_HUNG: the GPU took too long on a task and Windows reset the driver" :
+        r == (HRESULT)0x887A0005 ? "DEVICE_REMOVED: the graphics card stopped (driver crash or update, overclock, power or heat)" :
+        r == (HRESULT)0x887A0007 ? "DEVICE_RESET: the GPU was reset after a bad command" :
+        r == (HRESULT)0x887A0020 ? "DRIVER_INTERNAL_ERROR: an error inside the graphics driver" :
+        r == (HRESULT)0x8007000E ? "E_OUTOFMEMORY: out of memory" : "another reason";
+    gpu_add("REMOVED, reason 0x%08lX (%s)", (unsigned long)r, why);
+    if (!g_dredOn) {
+        gpu_add("; more details: set GpuCrashDetails=1 in W3CrashFix.ini");
+        return 0;
+    }
+    ID3D12DeviceRemovedExtendedData *dred = NULL;
+    if (FAILED(ID3D12Device_QueryInterface(d, &IID_ID3D12DeviceRemovedExtendedData, (void **)&dred)) || !dred) {
+        gpu_add("; DRED: not available");
+        return 0;
+    }
+    D3D12_DRED_PAGE_FAULT_OUTPUT pf = {0};
+    if (SUCCEEDED(ID3D12DeviceRemovedExtendedData_GetPageFaultAllocationOutput(dred, &pf))) {
+        if (pf.PageFaultVA) {
+            gpu_add("; page fault at GPU address 0x%llX", (unsigned long long)pf.PageFaultVA);
+            const D3D12_DRED_ALLOCATION_NODE *lists[2] = { pf.pHeadExistingAllocationNode, pf.pHeadRecentFreedAllocationNode };
+            for (int l = 0; l < 2; l++) {
+                int k = 0;
+                for (const D3D12_DRED_ALLOCATION_NODE *a = lists[l]; a && k < 3 && readable((const unsigned char *)a, sizeof *a);
+                     a = a->pNext, k++) {
+                    char nm[64]; dred_name(a->ObjectNameA, a->ObjectNameW, nm, sizeof nm);
+                    gpu_add("%s type %d '%s'", k ? "," : (l ? "; recently freed there:" : "; in use there:"), (int)a->AllocationType, nm);
+                }
+            }
+        } else gpu_add("; no page fault");
+    }
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT bc = {0};
+    if (SUCCEEDED(ID3D12DeviceRemovedExtendedData_GetAutoBreadcrumbsOutput(dred, &bc))) {
+        int shown = 0, nodes = 0;
+        for (const D3D12_AUTO_BREADCRUMB_NODE *b = bc.pHeadAutoBreadcrumbNode; b && nodes < 500 && shown < 3 &&
+             readable((const unsigned char *)b, sizeof *b); b = b->pNext, nodes++) {
+            if (!b->pLastBreadcrumbValue || !readable((const unsigned char *)b->pLastBreadcrumbValue, 4)) continue;
+            UINT32 done = *b->pLastBreadcrumbValue;
+            if (done >= b->BreadcrumbCount) continue;                 // this command list finished
+            unsigned op = 0xFFFF;
+            if (b->pCommandHistory && readable((const unsigned char *)(b->pCommandHistory + done), sizeof *b->pCommandHistory))
+                op = (unsigned)b->pCommandHistory[done];
+            char cl[64], q[64];
+            dred_name(b->pCommandListDebugNameA, b->pCommandListDebugNameW, cl, sizeof cl);
+            dred_name(b->pCommandQueueDebugNameA, b->pCommandQueueDebugNameW, q, sizeof q);
+            gpu_add("%s command list '%s' on queue '%s' stopped at step %u of %u (%s)",
+                    shown ? "," : "; unfinished:", cl, q, (unsigned)done + 1, (unsigned)b->BreadcrumbCount,
+                    op == 0xFFFF ? "?" : dred_op(op));
+            shown++;
+        }
+        if (!shown) gpu_add("; no unfinished GPU work recorded");
+    }
+    ID3D12DeviceRemovedExtendedData_Release(dred);
+    return 0;
+}
+// ---------------------------------------------------------------- crash dump (since 2.0.0)
+// Onno, 19 Nov 2026 ("all of them", idea 2): with CrashDump=1 in W3CrashFix.ini (off by default) a crash also writes
+// W3CrashFix.crash.dmp next to the crash log: a Windows minidump with the crashed game's threads, their stacks, the
+// loaded files and the memory the stacks and registers point to. That shows the values the game was working with,
+// which a call stack can't; the descriptor heap leak itself was found in such dumps. It can hold bits of the game's
+// memory (for example file paths with the Windows user name), which is why it is opt-in and the docs say so.
+// dbghelp.dll (Windows' own, from System32) is loaded at game start when the setting is on, never during a crash. The
+// dump is written by a thread of its own; the crash report waits for it at most 20 s and then goes on without it.
+typedef BOOL (WINAPI *MDWD_t)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
+                              PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
+static MDWD_t g_mdwd;                          // MiniDumpWriteDump, loaded at start
+static struct { HANDLE f; MINIDUMP_EXCEPTION_INFORMATION x; BOOL ok; } g_dumpJob;
+static DWORD WINAPI dump_load(LPVOID unused) {
+    (void)unused;
+    wchar_t p[MAX_PATH]; UINT n = GetSystemDirectoryW(p, MAX_PATH);
+    if (n && n < MAX_PATH - 16) { lstrcatW(p, L"\\dbghelp.dll"); HMODULE h = LoadLibraryW(p); if (h) g_mdwd = (MDWD_t)GetProcAddress(h, "MiniDumpWriteDump"); }
+    logf(g_mdwd ? "crash dump: on (CrashDump=1): a crash also writes W3CrashFix.crash.dmp"
+                : "crash dump: CrashDump=1, but Windows' dbghelp.dll could not be loaded; no dump will be written");
+    return 0;
+}
+static DWORD WINAPI dump_write(LPVOID unused) {
+    (void)unused;
+    g_dumpJob.ok = g_mdwd(GetCurrentProcess(), GetCurrentProcessId(), g_dumpJob.f,
+                          (MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory | MiniDumpScanMemory | MiniDumpWithThreadInfo),
+                          &g_dumpJob.x, NULL, NULL);
+    return 0;
+}
+static void crash_dump(EXCEPTION_POINTERS *ep, const wchar_t *dir) {
+    wchar_t p[MAX_PATH]; lstrcpyW(p, dir); lstrcatW(p, L"\\W3CrashFix.crash.dmp");
+    DeleteFileW(p);                            // never leave the dump of an older crash next to this crash's log
+    g_dumpDone = 0;
+    if (!g_dumpWanted || !g_mdwd) return;
+    g_dumpJob.f = CreateFileW(p, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (g_dumpJob.f == INVALID_HANDLE_VALUE) { logf("crash dump: could not create the file (%lu)", GetLastError()); return; }
+    g_dumpJob.x.ThreadId = GetCurrentThreadId(); g_dumpJob.x.ExceptionPointers = ep; g_dumpJob.x.ClientPointers = FALSE;
+    g_dumpJob.ok = FALSE;
+    HANDLE t = CreateThread(NULL, 0, dump_write, NULL, 0, NULL);
+    if (!t) { CloseHandle(g_dumpJob.f); DeleteFileW(p); logf("crash dump: could not start the writer"); return; }
+    if (WaitForSingleObject(t, 20000) != WAIT_OBJECT_0) {
+        // still writing: leave the thread and its file alone (closing the file under it could crash it), go on
+        logf("crash dump: not finished within 20 s; the crash report goes on without it");
+        CloseHandle(t); return;
+    }
+    CloseHandle(t);
+    LARGE_INTEGER sz = {0}; GetFileSizeEx(g_dumpJob.f, &sz);
+    CloseHandle(g_dumpJob.f);
+    if (!g_dumpJob.ok) { DeleteFileW(p); logf("crash dump: Windows could not write it"); return; }
+    g_dumpDone = 1;
+    logf("crash dump: written, W3CrashFix.crash.dmp, %lld KB", (long long)(sz.QuadPart >> 10));
+}
+
+// Switched on from a thread of its own at game start, before the game creates its device (LoadLibrary must not run
+// inside DllMain). If the device already exists, it only takes effect at the next start, and the log says so.
+static DWORD WINAPI dred_switch_on(LPVOID unused) {
+    (void)unused;
+    if (GetModuleHandleW(L"D3D12Core.dll")) { logf("gpu details: GpuCrashDetails=1, but the game's graphics device already exists; it takes effect at the next start"); return 0; }
+    HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
+    typedef HRESULT (WINAPI *GDI_t)(REFIID, void **);
+    GDI_t gdi = d3d12 ? (GDI_t)GetProcAddress(d3d12, "D3D12GetDebugInterface") : NULL;
+    ID3D12DeviceRemovedExtendedDataSettings *s = NULL;
+    if (!gdi || FAILED(gdi(&IID_ID3D12DeviceRemovedExtendedDataSettings, (void **)&s)) || !s) {
+        logf("gpu details: GpuCrashDetails=1, but this Windows does not offer DRED (needs Windows 10 version 1903 or newer)");
+        return 0;
+    }
+    ID3D12DeviceRemovedExtendedDataSettings_SetAutoBreadcrumbsEnablement(s, D3D12_DRED_ENABLEMENT_FORCED_ON);
+    ID3D12DeviceRemovedExtendedDataSettings_SetPageFaultEnablement(s, D3D12_DRED_ENABLEMENT_FORCED_ON);
+    ID3D12DeviceRemovedExtendedDataSettings_Release(s);
+    g_dredOn = 1;
+    logf("gpu details: DRED switched on (GpuCrashDetails=1): a GPU crash report will name the unfinished GPU work and any page fault");
+    return 0;
+}
+
 static void crash_report(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     DWORD code = er->ExceptionCode;
@@ -1034,9 +1435,23 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
             DWORD w; WriteFile(g_log, pre, (DWORD)strlen(pre), &w, NULL);
             WriteFile(g_log, g_crStack, (DWORD)strlen(g_crStack), &w, NULL); WriteFile(g_log, "\r\n", 2, &w, NULL);
         }
-    } else { lstrcpyA(g_crRegs, "not available"); lstrcpyA(g_crStack, "not available"); }
+    } else { lstrcpyA(g_crRegs, "not available"); lstrcpyA(g_crStack, "not available"); lstrcpyA(g_crFiles, "not available"); }
+    static char evs[EV_N * 140]; fmt_events(evs, sizeof evs);
+    logf("[CRASH] files in the call stack: %s", g_crFiles);
 
-    long long rva = g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
+    // GPU state (since 2.0.0): asked on a thread of its own, waited for at most 1.5 s (see gpu_query)
+    {
+        HANDLE gq = CreateThread(NULL, 0, gpu_query, NULL, 0, NULL);
+        if (!gq) lstrcpyA(g_gpuState, "not checked (could not start the check)");
+        else {
+            if (WaitForSingleObject(gq, 1500) != WAIT_OBJECT_0)
+                lstrcpyA(g_gpuState, "not known (D3D12 did not answer within 1.5 s)");
+            CloseHandle(gq);
+        }
+        logf("[CRASH] GPU state: %s", g_gpuState);
+    }
+
+    long long rva =g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
     // Since 1.6.2 the verdict also looks at the call stack (Onno, 18 Nov 2026, after a test where the empty page was
     // used one call deeper, at witcher3.exe+0x2809364, called from +0x280AD2E). The same crash, an empty page read
     // through a NULL pointer, then shows up in a function that the crash function called. It counts as the
@@ -1055,8 +1470,24 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
                 if (g_crFrames[i] > ib && r > fn->BeginAddress && r <= fn->EndAddress) deeper = 1;
             }
     }
-    static char notOurs[200];
-    snprintf(notOurs, sizeof notOurs, "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x%X). Something else crashed the game.", g_crashRva);
+    // Since 2.0.0 (Onno, 20 Nov 2026: "it should be made clearer that w3crashfix does not cause this crash"): the verdict
+    // also says whether W3CrashFix's own code took part. It is checked, not assumed: the crash address and every entry of
+    // the call stack are looked up, and only when none of them lies in W3CrashFix's own file does the verdict say that
+    // W3CrashFix did not cause it. If one does, it says so and asks for the log.
+    // Worded as what was checked, not as a certainty (Onno agreed, 20 Nov 2026): the stack check is strong evidence, not
+    // proof (a wrong page handed out earlier could make the game crash later somewhere else). So it says "no sign", and
+    // adds that the fix rescued no pages only when that is true in this session.
+    static char notOurs[720];
+    int stackKnown = ep->ContextRecord && strcmp(g_crStack, "not available");
+    const char *why =
+        g_crOurs ? "W3CrashFix's own code is in the call stack of this crash, so it may be involved: please send this crash log."
+        : stackKnown && g_rescued == 0 ? "There is no sign that W3CrashFix caused it: its own code is not at the crash address or in the call stack, "
+                                         "and its fix rescued no pages in this session. W3CrashFix only noticed the crash and saved this report."
+        : stackKnown ? "There is no sign that W3CrashFix caused it: its own code is not at the crash address or in the call stack. "
+                       "W3CrashFix only noticed the crash and saved this report."
+        : "W3CrashFix only noticed the crash and saved this report.";
+    snprintf(notOurs, sizeof notOurs, "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x%X). %s%s", g_crashRva,
+             why, g_crOurs ? "" : " Something else crashed the game.");
     const char *verdict =
         !g_buildOk ? "W3CrashFix does not support this build of the game, so it cannot tell which crash this is."
         : !g_crashRva ? "W3CrashFix did not find the place of its crash in this build of the game, so it cannot tell which crash this is."
@@ -1065,6 +1496,37 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
                                 : "This is the descriptor heap crash that W3CrashFix is made for, although the fix was active. That should not happen: please report it.")
         : (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack). The fix was not active in this session."
                   : "This is the descriptor heap crash that W3CrashFix is made for. The fix was not active in this session.");
+    // Known crashes (since 2.0.0; Onno, 19 Nov 2026, "all of them", idea 3): crash places that several players' reports
+    // share, with what is known and what may help. Shown on the report page and in the summary, so a player gets help
+    // at once. Only for the game build the addresses come from (5.0.16, not moved). The list grows with each release,
+    // from promo\Crash-Table.ps1; an entry needs reports from at least three players.
+    // Since test48 (Onno's test of 20 Nov 2026, "all 4"): the tips are a list of their own, shown on the report page as a
+    // separate block below the summary instead of one long paragraph in it; the GPU tip says whether GpuCrashDetails is
+    // already on; and no "yet" in "the cause is not known" (no promises in public texts).
+    static const struct { unsigned rva; int gpu; const char *what; const char *tips[4]; } known_crashes[] = {
+        { 0x1F103A3, 1,
+          "The graphics card dropped out, and the game stopped itself with \"Gpu Crash for unknown reasons\". "
+          "Seen in reports from several players, half of them on graphics cards with 6 GB of memory. The cause is not known.",
+          { "Update the graphics driver.", "Remove any overclock or undervolt of the graphics card.",
+            "On a card with 8 GB of memory or less, lower texture quality and ray tracing.", NULL } },
+    };
+    int ki = -1;
+    for (size_t k = 0; g_buildOk && !g_moved && rva >= 0 && k < sizeof known_crashes / sizeof known_crashes[0]; k++)
+        if ((long long)known_crashes[k].rva == rva) ki = (int)k;
+    const char *gpuTip = ki < 0 || !known_crashes[ki].gpu ? NULL
+        : g_dredOn ? "GpuCrashDetails is on, so this crash log already holds the extra GPU details (see \"GPU state\")."
+        : g_dredWanted ? "GpuCrashDetails=1 is set, but it could not take effect in this session (see the activity log); it works from the next game start."
+        : "To help find the cause, set GpuCrashDetails=1 in W3CrashFix.ini and send the log of the next crash: it then says more.";
+    static char knownLine[1024];
+    knownLine[0] = 0;
+    if (ki >= 0) {
+        int n = snprintf(knownLine, sizeof knownLine, "Known crash: %s Things that may help:", known_crashes[ki].what);
+        for (int t = 0; t < 4 && known_crashes[ki].tips[t] && n < (int)sizeof knownLine - 160; t++)
+            n += snprintf(knownLine + n, sizeof knownLine - n, " %s", known_crashes[ki].tips[t]);
+        if (gpuTip && n < (int)sizeof knownLine - 160) n += snprintf(knownLine + n, sizeof knownLine - n, " %s", gpuTip);
+        snprintf(knownLine + n, sizeof knownLine - n, "\r\n");
+        logf("[CRASH] %.*s", n, knownLine);
+    }
     const char *test = "";
 #ifdef W3_CRASHTEST
     if (g_testCrash) test = "Note: this crash was triggered on purpose with a test key of this TEST BUILD.\r\n";
@@ -1092,17 +1554,21 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
              "Crash: exception 0x%08lX (%s%s) at %s\r\n"
              "Registers: %s\r\n"
              "Call stack: %s\r\n"
+             "Files in the call stack: %s\r\n"
              "Session length: %lu min\r\n"
+             "Before the crash: %s\r\n"
              "Graphics card: %s\r\n"
+             "GPU state: %s\r\n"
+             "Game settings: %s\r\n"
              "Descriptor heaps: %lld live + %lld sampler (peak %lld + %lld), %lld failed creations\r\n"
              "Fix: %lld pages rescued, %lld retired normally\r\n"
              "Memory: %s\r\n"
-             "Verdict: %s\r\n%s",
+             "Verdict: %s\r\n%s%s",
              !g_buildOk ? "no" : g_moved ? "yes (not 5.0.16, but the same code at other places)" : "yes", g_fixActive ? "yes" : "no",
-             (unsigned long)code, exc_name(code), detail, at, g_crRegs, g_crStack,
-             (unsigned long)((GetTickCount() - g_t0) / 60000), g_adapterName,
+             (unsigned long)code, exc_name(code), detail, at, g_crRegs, g_crStack, g_crFiles,
+             (unsigned long)((GetTickCount() - g_t0) / 60000), evs, g_adapterName, g_gpuState, g_gameSettings,
              g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
-             (long long)g_rescued, (long long)g_retiredNormal, mem, verdict, test);
+             (long long)g_rescued, (long long)g_retiredNormal, mem, verdict, knownLine, test);
 
     // W3CrashFix.crash.log = the summary + this session's whole log. Only a newer crash overwrites it. It gets a
     // folder of its own next to the mod, holding nothing else: the folder window that opens after a crash then
@@ -1126,6 +1592,10 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
         }
         CloseHandle(f);
     }
+    {   // CrashDump=1: the dump goes into the same folder, after the log (the log is the part that must be there)
+        wchar_t dd[MAX_PATH]; lstrcpyW(dd, g_dir); lstrcatW(dd, W3CF_REPORT_DIR_W);
+        crash_dump(ep, dd);
+    }
 
     // W3CrashFix-report.html
     // One button: it opens the author's upload page in the user's browser, where the user picks the crash log, and
@@ -1145,6 +1615,9 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "a{color:#8ab4f8}.b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
            ".g{background:#30363d;padding:6px 12px;font-weight:400}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}li{margin:4px 0}"
            ".o{background:#3a2a00;border:1px solid #b8860b;border-radius:6px;padding:10px 14px}"
+           // Send button always in view (Onno, 20 Nov 2026: "the send button should always be visible. i had to scroll down"): its line sticks to the bottom of the window until the page is scrolled past it
+           ".sb{position:sticky;bottom:0;margin:0;padding:10px 0;background:#16181c;border-top:1px solid #2c3036;z-index:1}"
+           ".k{background:#10263a;border:1px solid #2f6da3;border-radius:6px;padding:10px 14px;margin:12px 0}.k ul{margin:6px 0}"
            "</style></head><body><h1>The Witcher 3 crashed</h1>");
     // When the crash happened, and a notice if the page is opened again later (Onno, 18 Nov 2026): the page and the
     // crash log stay until the next crash the mod catches, so an old page must not look like a new crash.
@@ -1167,15 +1640,36 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     // The page shows only whether the fix was active and the verdict (Onno, 17 Nov 2026: "the less clutter the better");
     // the full summary stays at the top of the crash log, which is what gets sent.
     {
-        char page[1024];
+        char page[2048];
         snprintf(page, sizeof page, "Fix active: %s\r\nVerdict: %s\r\n%s", g_fixActive ? "yes" : "no", verdict, test);
         html_esc(page, g_crEsc, sizeof g_crEsc); put(f, g_crEsc);
     }
-    put(f, "</pre><p><b>The file to send:</b><br><code>");
+    if (ki >= 0) {   // a known crash: what is known and the tips, in a block of its own below the summary
+        char e[1024];
+        put(f, "</pre><div class=\"k\"><b>This crash is known.</b> ");
+        html_esc(known_crashes[ki].what, e, sizeof e); put(f, e);
+        put(f, "<br>Things that may help:<ul>");
+        for (int t = 0; t < 4 && known_crashes[ki].tips[t]; t++) { put(f, "<li>"); html_esc(known_crashes[ki].tips[t], e, sizeof e); put(f, e); put(f, "</li>"); }
+        put(f, "</ul>");
+        if (gpuTip) { html_esc(gpuTip, e, sizeof e); put(f, e); }
+        put(f, "</div><pre hidden>");   // keeps the "</pre>" below balanced
+    }
+    // With a crash dump (CrashDump=1, since 2.0.0) both files are listed under the heading (Onno, 20 Nov 2026, looking at
+    // the page: "we don't need the crashdump here?" - "yes"); the dump stays marked optional, and the button still copies
+    // only the crash log's path (a file window takes one pasted path).
+    put(f, g_dumpDone ? "</pre><p><b>The files to send:</b><br><code>" : "</pre><p><b>The file to send:</b><br><code>");
     put(f, dirEsc);
-    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log</code><br><span class=\"s\">A small folder window has opened in the lower right corner that holds only this file. "
-           "You don't need it: the button below also copies the file's path. It stays there until the game crashes again.</span></p>"
-           "<p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
+    if (g_dumpDone) {
+        put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log</code><br><code>");
+        put(f, dirEsc);
+        put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.dmp</code> <span class=\"s\">(optional: the crash dump, because you switched on CrashDump=1. "
+               "It helps to find the cause, and it may contain bits of the game's memory, such as file paths with your Windows user name.)</span><br>"
+               "<span class=\"s\">A small folder window has opened in the lower right corner with both files. To send both, pick both in the file window "
+               "of the upload page, or drag both from the folder window onto the page. The folder stays as it is until the game crashes again.</span></p>");
+    } else
+        put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log</code><br><span class=\"s\">A small folder window has opened in the lower right corner that holds only this file. "
+               "You don't need it: the button below also copies the file's path. It stays there until the game crashes again.</span></p>");
+    put(f, "<p class=\"sb\"><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
     put(f, dirEsc);
     put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Send the crash log</a> <span class=\"s\" id=\"c\"></span></p>"
            "<p><b>How it works</b></p><ol>"
@@ -1185,6 +1679,8 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "<li>Type any name you like. A made-up one is fine.</li>"
            "<li>Click Upload. When you see &quot;Files are uploaded!&quot;, you are done and can close that tab.</li></ol>"
            "<p class=\"s\">pCloud then offers you an account. You don't need one.</p>"
+           // Onno, 20 Nov 2026: "inform the user that accidentally uploading a wrong file is not a big problem"
+           "<p class=\"s\">Sent the wrong file by mistake? No problem: anything that isn't a W3CrashFix log or crash dump is deleted. You can just send the right file afterwards.</p>"
            "<p class=\"s\">Ctrl+V pasted nothing? <button class=\"b g\" data-p=\"");
     put(f, dirEsc);
     put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Copy the file's path</button> and paste it again into the &quot;File name&quot; box.</p>"
@@ -1273,8 +1769,9 @@ static void guard_filter(int quiet) {
 }
 
 #ifdef W3_CRASHTEST
-// TEST BUILDS ONLY - never part of a release. Two key combinations crash the game on purpose, while the game window
-// is in front:  Ctrl+Alt+Shift+F7 = plain crash inside the mod,  Ctrl+Alt+Shift+F8 = the real descriptor heap crash.
+// TEST BUILDS ONLY - never part of a release. Three key combinations crash the game on purpose, while the game window
+// is in front:  Ctrl+Alt+Shift+F7 = plain crash inside the mod,  Ctrl+Alt+Shift+F8 = the real descriptor heap crash,
+// Ctrl+Alt+Shift+F9 = the GPU crash (the game's graphics device removed, see below).
 static DWORD WINAPI crash_keys(LPVOID unused) {
     (void)unused;
     for (;;) {
@@ -1290,6 +1787,26 @@ static DWORD WINAPI crash_keys(LPVOID unused) {
         }
         if ((GetAsyncKeyState(VK_F8) & 0x8000) && InterlockedCompareExchange(&g_testCrash, 1, 0) == 0)
             logf("TEST: Ctrl+Alt+Shift+F8 - real descriptor heap crash requested%s", g_fixActive ? "" : " (fix not active: nothing will happen)");
+        // F9 (since test47, Onno, 20 Nov 2026: "are you able to add a key combo to simulate the gpu crash?" - "yes"):
+        // D3D12's own test function ID3D12Device5::RemoveDevice puts the game's device in the "removed" state in
+        // software, as if the graphics card had dropped out; the driver and the card are not touched. The game then
+        // runs into it the way players do: its next GPU check fails and its own handler stops it ("Gpu Crash for
+        // unknown reasons", witcher3.exe+0x1F103A3), and the crash report shows the GPU state (and DRED with
+        // GpuCrashDetails=1). If the game hangs instead, the log says so after 20 s.
+        if ((GetAsyncKeyState(VK_F9) & 0x8000) && InterlockedCompareExchange(&g_testCrash, 4, 0) == 0) {
+            ID3D12Device5 *d5 = NULL;
+            if (!g_dev || FAILED(ID3D12Device_QueryInterface(g_dev, &IID_ID3D12Device5, (void **)&d5)) || !d5) {
+                logf("TEST: Ctrl+Alt+Shift+F9 - GPU crash requested, but %s; nothing done",
+                     g_dev ? "this Windows or driver offers no ID3D12Device5" : "no D3D12 device seen yet");
+                g_testCrash = 0;
+                continue;
+            }
+            logf("TEST: Ctrl+Alt+Shift+F9 - removing the game's graphics device (ID3D12Device5::RemoveDevice), as if the graphics card dropped out");
+            ID3D12Device5_RemoveDevice(d5);
+            ID3D12Device5_Release(d5);
+            for (int s = 0; s < 20; s++) Sleep(1000);
+            logf("TEST: 20 s after the device removal the game has not crashed (it may hang): end it in Task Manager if needed");
+        }
     }
     return 0;
 }
@@ -1326,13 +1843,27 @@ static DWORD WINAPI init(LPVOID unused) {
         DXGI_ADAPTER_DESC1 ad; IDXGIAdapter1_GetDesc1(best, &ad);
         char name[128]; WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof name, NULL, NULL);
         logf("adapter: %s (%llu MB)", name, (unsigned long long)(ad.DedicatedVideoMemory >> 20));
-        snprintf(g_adapterName, sizeof g_adapterName, "%s (%llu MB)", name, (unsigned long long)(ad.DedicatedVideoMemory >> 20));
+        // The graphics driver version (Onno, 19 Nov 2026, with the GPU crash diagnostics of 2.0.0): if several GPU
+        // crashes share one driver, that is a lead. Windows reports it as four numbers, for example 32.0.15.6614;
+        // NVIDIA's own number (566.14) is the last five digits. Read once here, never on the crash path.
+        LARGE_INTEGER umd = {0};
+        if (SUCCEEDED(IDXGIAdapter1_CheckInterfaceSupport(best, &IID_IDXGIDevice, &umd))) {
+            unsigned a = (unsigned)(umd.HighPart >> 16) & 0xFFFF, b = (unsigned)umd.HighPart & 0xFFFF,
+                     c = (unsigned)(umd.LowPart >> 16) & 0xFFFF, d = (unsigned)umd.LowPart & 0xFFFF;
+            if (ad.VendorId == 0x10DE) {
+                unsigned nv = (c % 10) * 10000 + d;
+                snprintf(g_driver, sizeof g_driver, "%u.%u.%u.%u (NVIDIA %u.%02u)", a, b, c, d, nv / 100, nv % 100);
+            } else snprintf(g_driver, sizeof g_driver, "%u.%u.%u.%u", a, b, c, d);
+        }
+        logf("driver: %s", g_driver);
+        snprintf(g_adapterName, sizeof g_adapterName, "%s (%llu MB), driver %s", name, (unsigned long long)(ad.DedicatedVideoMemory >> 20), g_driver);
     }
 
     ID3D12Device *dev = NULL;
     // D3D12 devices are per-adapter singletons: this returns the game's own device (AddRef'd).
     HRESULT hr = create ? create((IUnknown *)best, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void **)&dev) : E_FAIL;
     if (FAILED(hr) || !dev) { logf("D3D12CreateDevice failed 0x%08lX - not hooking", (unsigned long)hr); return 0; }
+    g_dev = dev;                                      // kept for the crash report's "GPU state" (we hold a reference)
 
     D3D12_DESCRIPTOR_HEAP_DESC hd = { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
     ID3D12DescriptorHeap *heap = NULL;
@@ -1347,7 +1878,11 @@ static DWORD WINAPI init(LPVOID unused) {
     // keep our device reference: it is the game's device and must outlive our hooks anyway
     guard_filter(0);
 
-    for (;;) { Sleep(30000); summary("30s"); guard_filter(0); }
+    game_settings();
+    for (;;) {
+        for (int k = 0; k < 15; k++) { Sleep(2000); watch_events(); }
+        summary("30s"); guard_filter(0); game_settings();
+    }
     return 0;
 }
 
@@ -1589,6 +2124,8 @@ static void write_send_page(void) {
            ".b{display:inline-block;margin:6px 10px 6px 0;padding:10px 18px;border-radius:6px;border:0;background:#c8102e;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}"
            ".g{background:#30363d;padding:6px 12px;font-weight:400}code{background:#0d0e11;padding:2px 5px;border-radius:4px}.s{color:#9aa0a6;font-size:14px}li{margin:4px 0}"
            ".o{background:#3a2a00;border:1px solid #b8860b;border-radius:6px;padding:10px 14px}"
+           // Send button always in view (Onno, 20 Nov 2026: "the send button should always be visible. i had to scroll down"): its line sticks to the bottom of the window until the page is scrolled past it
+           ".sb{position:sticky;bottom:0;margin:0;padding:10px 0;background:#16181c;border-top:1px solid #2c3036;z-index:1}"
            "</style></head><body><h1>Send your W3CrashFix log</h1>"
            "<p><b>Every log is welcome, also from a game that did not crash</b>, with or without other mods. A session without a crash "
            "shows how the game behaves when all goes well, and can be compared with sessions that crashed. "
@@ -1603,7 +2140,7 @@ static void write_send_page(void) {
     put(f, "W3CrashFix.activity.log</code><br><span class=\"s\">It holds the session that is running now, or the last one if the game is closed. "
            "Best sent after you close the game and before you start it again: at the next start it is renamed to "
            "<code>W3CrashFix.activity.previous.log</code> (you can send that one instead), and the start after that replaces it.</span></p>"
-           "<p><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
+           "<p class=\"sb\"><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
     put(f, dirEsc);
     put(f, "W3CrashFix.activity.log\" onclick=\"cp(this)\">Send the activity log</a> <span class=\"s\" id=\"c\"></span></p>"
            "<p><b>How it works</b></p><ol>"
@@ -1612,6 +2149,8 @@ static void write_send_page(void) {
            "<li>Type any name you like. A made-up one is fine. Adding &quot;no crash&quot;, and &quot;clean&quot; if you played without other mods, helps.</li>"
            "<li>Click Upload. When you see &quot;Files are uploaded!&quot;, you are done and can close that tab.</li></ol>"
            "<p class=\"s\">pCloud then offers you an account. You don't need one.</p>"
+           // Onno, 20 Nov 2026: "inform the user that accidentally uploading a wrong file is not a big problem"
+           "<p class=\"s\">Sent the wrong file by mistake? No problem: anything that isn't a W3CrashFix log or crash dump is deleted. You can just send the right file afterwards.</p>"
            "<p class=\"s\">Ctrl+V pasted nothing? <button class=\"b g\" data-p=\"");
     put(f, dirEsc);
     put(f, "W3CrashFix.activity.log\" onclick=\"cp(this)\">Copy the file's path</button> and paste it again into the &quot;File name&quot; box.</p>"
@@ -1636,13 +2175,25 @@ static void write_send_page(void) {
 static void start_work(void) {
     char opv[8]; ini_get(L"OpenReportPage", opv, sizeof opv);
     if (!opv[0]) ini_set(L"OpenReportPage", "1");        // make the setting visible to anyone who opens the file
+    char gcd[8]; ini_get(L"GpuCrashDetails", gcd, sizeof gcd);
+    if (!gcd[0]) ini_set(L"GpuCrashDetails", "0");       // the same, for the GPU details (off by default, see "GPU state")
+    if (g_dredWanted) {                                  // before the game creates its graphics device; init waits for that
+        HANDLE g = CreateThread(NULL, 0, dred_switch_on, NULL, 0, NULL);
+        if (g) CloseHandle(g);
+    }
+    char cdv[8]; ini_get(L"CrashDump", cdv, sizeof cdv);
+    if (!cdv[0]) ini_set(L"CrashDump", "0");             // visible, off by default (see "crash dump")
+    if (g_dumpWanted) {                                  // dbghelp.dll is loaded now, never during a crash
+        HANDLE g = CreateThread(NULL, 0, dump_load, NULL, 0, NULL);
+        if (g) CloseHandle(g);
+    }
     load_report_id();
     scan_mods();
     write_send_page();
     guard_filter(1);
     AddVectoredExceptionHandler(1, crash_notice);
 #ifdef W3_CRASHTEST
-    logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = plain crash, Ctrl+Alt+Shift+F8 = descriptor heap crash");
+    logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = plain crash, Ctrl+Alt+Shift+F8 = descriptor heap crash, Ctrl+Alt+Shift+F9 = GPU crash (device removed)");
     HANDLE k = CreateThread(NULL, 0, crash_keys, NULL, 0, NULL);
     if (k) CloseHandle(k);
 #endif

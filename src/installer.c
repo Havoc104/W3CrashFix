@@ -23,7 +23,7 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"1.8.1-5.0.16"
+#define W3CF_VERSION   L"2.0.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
@@ -290,6 +290,7 @@ static DWORD uninstall_all(const wchar_t *root) {
     bin_file(root, L"W3CrashFix-report.html", p);  if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
     bin_file(root, L"W3CrashFix.crash.log", p);    if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
     bin_file(root, L"W3CrashFix crash report\\W3CrashFix.crash.log", p); if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();
+    bin_file(root, L"W3CrashFix crash report\\W3CrashFix.crash.dmp", p); if (exists(p) && !DeleteFileW(p) && !d) d = GetLastError();   // CrashDump=1 (2.0.0)
     bin_file(root, L"W3CrashFix crash report", p); if (exists(p)) RemoveDirectoryW(p);
     // Since 1.7.0 the activity logs go too (Onno, 18 Nov 2026: Uninstall left them behind), also the names up to
     // 1.5.0. A log that cannot be removed (the game still running) does not count as a failed uninstall.
@@ -540,7 +541,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_wnd = h;
         HWND t = ctl(L"STATIC", L"W3CrashFix " W3CF_VERSION, 0, 16, 14, 528, 24, 0);
         SendMessageW(t, WM_SETFONT, (WPARAM)g_bold, TRUE);
-        ctl(L"STATIC", L"Crash fix for " GAME_NAME L" (DirectX 12).", 0, 16, 40, 528, 20, 0);
+        // 2.0.0 (Onno, 20 Nov 2026, "do it"): the subtitle names the diagnostics too, like the README and Nexus description
+        ctl(L"STATIC", L"Crash fix and diagnostics for " GAME_NAME L" (DirectX 12).", 0, 16, 40, 528, 20, 0);
         ctl(L"STATIC", L"Game folder:", 0, 16, 70, 528, 18, 0);
         g_path = ctl(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 16, 90, 432, 24, ID_PATH);
         ctl(L"BUTTON", L"Browse...", BS_PUSHBUTTON | WS_TABSTOP, 456, 89, 88, 26, ID_BROWSE);

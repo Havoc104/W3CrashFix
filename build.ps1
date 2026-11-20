@@ -26,7 +26,7 @@ if ($Package -and $CrashTest) { throw 'A crash-test build must never be packaged
 # script itself names none of them. The ids are taken from the 'Report id' lines of the crash logs that were
 # already scanned and analysed (promo\pcloud-analysed.txt), when the pCloud drive is there; ids found once are kept.
 function Test-Privacy {
-    $terms = @(Get-Content promo\private-terms.txt -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -and -not $_.StartsWith('#') } | ForEach-Object { $_.Trim() })
+    $terms = @(Get-Content promo\private-terms.txt, promo\endorsers.txt -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -and -not $_.StartsWith('#') } | ForEach-Object { $_.Trim() })
     $idFile = 'promo\private-ids.txt'
     $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     Get-Content $idFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '^[0-9A-F]{16}$' } | ForEach-Object { [void]$ids.Add($_) }
@@ -146,6 +146,11 @@ if (Test-Path $gameExe) {
 } else { "Test SKIPPED: finding the code at other places (no game executable at $gameExe; set W3_GAME_EXE)" }
 if ($code -eq 0) {
     if ($log -notmatch 'caller=witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: heap caller was not named' }
+    if ($log -notmatch 'driver: \d+\.\d+\.\d+\.\d+') { throw 'test_diag: the graphics driver version was not logged (2.0.0)' }
+    # 2.0.0: the game's render settings, read from Documents\The Witcher 3\dx12user.settings (or "not found" on a PC
+    # without the game); the file's path must never be in the log (it holds the Windows user name).
+    if ($log -notmatch 'game settings: (ray tracing (ON|off|\?), path tracing (ON|off|\?) \||not found)') { throw 'test_diag: the game settings line is missing (2.0.0)' }
+    if ($log -match 'dx12user\.settings' -and $log -notmatch 'not found \(no Documents') { throw 'test_diag: the log names the settings file path' }
     if ($log -notmatch 'module: witcher3\.exe = ') { throw 'test_diag: module path line missing' }
     # Same program run from a folder laid out like NVIDIA's downloaded DLSS files: the feature folder must show.
     $ngx = "$t\NGX\models\dlssg\versions\1\files"
@@ -175,6 +180,11 @@ if ($code -eq 0) {
     }
     if ((Test-Path "$t\W3CrashFix.noreport") -or (IniVal "$t\W3CrashFix.ini" 'OpenReportPage') -ne '0') { throw 'test_diag: W3CrashFix.noreport was not taken over into W3CrashFix.ini as OpenReportPage=0' }
     if (Test-Path "$t\W3CrashFix.crash.log") { throw 'test_diag: the crash log of an earlier version in the old place was not removed' }
+    # 2.0.0: the GPU state line (answered by a thread of its own, so the report must still come out if D3D12 is slow)
+    # and the visible GpuCrashDetails=0 default in W3CrashFix.ini.
+    if ($cl -notmatch 'GPU state: [^\r\n]+') { throw 'test_diag: the crash summary has no "GPU state:" line' }
+    if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('[CRASH] GPU state: ')) { throw 'test_diag: the activity log lacks the GPU state line' }
+    if ((IniVal "$t\W3CrashFix.ini" 'GpuCrashDetails') -ne '0') { throw 'test_diag: W3CrashFix.ini does not show GpuCrashDetails=0' }
     # 1.6.2: the call stack. It starts at the crash address and names at least one caller in the stand-in game.
     $csLine = ($cl -split "`r?`n" | Where-Object { $_ -like 'Call stack: *' } | Select-Object -First 1)
     $crAt = [regex]::Match($cl, 'Crash: exception [^\r\n]* at (witcher3\.exe\+0x[0-9A-F]+)').Groups[1].Value
@@ -183,6 +193,30 @@ if ($code -eq 0) {
     if (([regex]::Matches($csLine, 'witcher3\.exe\+0x[0-9A-F]+')).Count -lt 2) { throw "test_diag: the call stack names no caller in the stand-in game: $csLine" }
     if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('[CRASH] call stack: ')) { throw 'test_diag: the activity log lacks the call stack line' }
     if (@(Get-ChildItem "$t\W3CrashFix crash report").Count -ne 1) { throw 'test_diag: the crash log''s own folder must hold exactly one file' }
+    # 2.0.0: files in the call stack with versions, the events line, and CrashDump=0 visible by default (no dump then).
+    if ($cl -notmatch 'Files in the call stack: [^\r\n]*witcher3\.exe') { throw 'test_diag: the crash summary does not list witcher3.exe under "Files in the call stack:"' }
+    if ($cl -notmatch 'Before the crash: [^\r\n]+') { throw 'test_diag: the crash summary has no "Before the crash:" line' }
+    if ((IniVal "$t\W3CrashFix.ini" 'CrashDump') -ne '0') { throw 'test_diag: W3CrashFix.ini does not show CrashDump=0' }
+    # 2.0.0: with CrashDump=1 the same crash also writes W3CrashFix.crash.dmp (a minidump: starts with MDMP) next to
+    # the log, the log says so, and the next crash replaces it rather than leaving an old one.
+    (Get-Content "$t\W3CrashFix.ini") -replace '^CrashDump=0$', 'CrashDump=1' | Set-Content "$t\W3CrashFix.ini" -Encoding ascii
+    # the second crash rewrites the report page and the logs; the checks further down are about the first crash
+    $keep = "$t\keep-first-crash"; New-Item -ItemType Directory -Force $keep | Out-Null
+    Copy-Item "$t\W3CrashFix-report.html", "$t\W3CrashFix.activity.log", $clf $keep -Force
+    & "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" crash | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw 'test_diag: the crash dump test did not crash' }
+    $global:LASTEXITCODE = 0
+    $dmp = "$t\W3CrashFix crash report\W3CrashFix.crash.dmp"
+    if (-not (Test-Path $dmp)) { throw 'test_diag: CrashDump=1 wrote no W3CrashFix.crash.dmp' }
+    $sig = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dmp), 0, 4)
+    if ($sig -ne 'MDMP') { throw "test_diag: W3CrashFix.crash.dmp is not a minidump (starts with '$sig')" }
+    if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('crash dump: written, W3CrashFix.crash.dmp')) { throw 'test_diag: the log does not say the dump was written' }
+    "Test passed: crash dump with CrashDump=1 ($([math]::Round((Get-Item $dmp).Length / 1KB)) KB)"
+    (Get-Content "$t\W3CrashFix.ini") -replace '^CrashDump=1$', 'CrashDump=0' | Set-Content "$t\W3CrashFix.ini" -Encoding ascii
+    Remove-Item $dmp
+    Copy-Item "$keep\W3CrashFix-report.html", "$keep\W3CrashFix.activity.log" $t -Force
+    Copy-Item "$keep\W3CrashFix.crash.log" $clf -Force
+    Remove-Item $keep -Recurse -Force
     # Send page for the activity log (Onno, 19 Nov 2026): written at every start, never opened by the mod. The stand-in
     # game is an unsupported build, so the "especially helpful" notice must be there too. Exactly one script.
     $sp = if (Test-Path "$t\W3CrashFix-send-log.html") { Get-Content "$t\W3CrashFix-send-log.html" -Raw } else { '' }
@@ -208,6 +242,8 @@ if ($code -eq 0) {
         # The note about personalising the id: only in W3CrashFix.ini, once, right above the ReportId line.
         $iniText = Get-Content "$t\W3CrashFix.ini" -Raw
         if (([regex]::Matches($iniText, '; ReportId: ')).Count -ne 1 -or $iniText -notmatch '(?s); Allowed: [^\r\n]*\r?\nReportId=') { throw 'test_diag: W3CrashFix.ini lacks the note above the ReportId line (or has it twice)' }
+        # 2.0.0: the line about several installations, exactly once, right above "; Allowed:"
+        if (([regex]::Matches($iniText, '; More than one installation of the game\?')).Count -ne 1 -or $iniText -notmatch '; More than one installation[^\r\n]*\r?\n; Allowed: ') { throw 'test_diag: W3CrashFix.ini lacks the line about several installations above "; Allowed:" (or has it twice)' }
     }
     if (-not $cl.Contains("Report id: $rid")) { throw 'test_diag: the crash summary does not show the report id from W3CrashFix.ini' }
     # The report page: one button, to the upload page; the folder link; nothing left of the two old buttons.
@@ -358,7 +394,7 @@ New-Item -ItemType Directory -Force "$ub\W3CrashFix crash report" | Out-Null
 Copy-Item "$t\witcher3.exe" $ub
 Copy-Item build\W3CrashFix.asi "$ub\W3CrashFix.asi"; Copy-Item build\W3CrashFix.asi "$ub\W3CrashFix.removed"
 foreach ($n in 'W3CrashFix.ini', 'W3CrashFix.accepted', 'W3CrashFix.id', 'W3CrashFix.noreport', 'W3CrashFix-report.html', 'W3CrashFix.crash.log',
-               'W3CrashFix crash report\W3CrashFix.crash.log', 'W3CrashFix.activity.log', 'W3CrashFix.activity.previous.log', 'W3CrashFix.log', 'W3CrashFix.previous.log', 'W3CrashFix-send-log.html') {
+               'W3CrashFix crash report\W3CrashFix.crash.log', 'W3CrashFix crash report\W3CrashFix.crash.dmp', 'W3CrashFix.activity.log', 'W3CrashFix.activity.previous.log', 'W3CrashFix.log', 'W3CrashFix.previous.log', 'W3CrashFix-send-log.html') {
     Set-Content "$ub\$n" 'x' -Encoding ascii
 }
 $p = Start-Process build\W3CrashFix-Installer.exe -ArgumentList '--uninstall', "`"$PWD\$u`"" -Wait -PassThru -WindowStyle Hidden
@@ -372,6 +408,12 @@ Remove-Item $u -Recurse -Force
 # own windows is frozen; the mod must open the folder window and the report page and then let the program end. If the
 # program is still there after 30 seconds, the mod is waiting for something it must never wait for.
 if ($WindowTest) {
+    # Onno, 20 Nov 2026: "if you open windows and tabs during building, could you close them when you're done?" The test
+    # opens a folder window on build\test\window\... and the report page in the default browser; both are closed again
+    # at the end. The folder window is found by its folder; the browser tab as the active report-page tab right after
+    # the test (see the clean-up below).
+    $browsers = 'chrome', 'msedge', 'firefox', 'brave', 'opera'
+    function Get-ReportTabWindows { @(Get-Process $browsers -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like 'W3CrashFix crash report*' }) }
     $wt = 'build\test\window'
     if (Test-Path $wt) { Remove-Item $wt -Recurse -Force }
     New-Item -ItemType Directory -Force $wt | Out-Null
@@ -388,6 +430,22 @@ if ($WindowTest) {
     if ($wl.Contains('took longer than 12 seconds')) { throw 'window test: opening the windows ran into the 12-second limit' }
     'Window test passed: with a frozen window of its own, the stand-in game ended by itself after its crash. Log lines:'
     ($wl -split "`r?`n" | Where-Object { $_ -match 'crash report:' }) | ForEach-Object { '  ' + $_ }
+    # Clean up what the test opened.
+    $full = (Resolve-Path $wt).Path; $closed = @()
+    try {
+        $sh = New-Object -ComObject Shell.Application
+        foreach ($w in @($sh.Windows())) {
+            $p = $null; try { $p = $w.Document.Folder.Self.Path } catch {}
+            if ($p -and $p.StartsWith($full, [StringComparison]::OrdinalIgnoreCase)) { $w.Quit(); $closed += 'the folder window' }
+        }
+    } catch {}
+    # The test's page opens as a new tab, and a new tab is the active one, so the browser window's title shows it.
+    # Only that one active tab is closed (Ctrl+W once), even if an older report page is open in another tab
+    # (Onno, 20 Nov 2026: "you didn't close the chrome tab that you opened during building").
+    $ws = New-Object -ComObject WScript.Shell
+    $b = Get-ReportTabWindows | Select-Object -First 1
+    if ($b -and $ws.AppActivate($b.Id)) { Start-Sleep -Milliseconds 300; $ws.SendKeys('^w'); $closed += "the report page tab ($($b.ProcessName))" }
+    if ($closed) { 'Closed after the window test: ' + ($closed -join ', ') }
 }
 
 # A release build must not contain the crash-test keys.
@@ -401,7 +459,7 @@ if (Select-String -Path build\W3CrashFix.asi, build\dinput8.dll -Pattern 'licens
 foreach ($f in 'build\W3CrashFix.asi', 'build\dinput8.dll') {
     if (-not (Select-String -Path $f -Pattern 'license: asking the user' -Encoding ascii -Quiet)) { throw "The license dialog is missing from $f." }
 }
-if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7 / F8 crash the game). Do not release it.' }
+if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7 / F8 / F9 crash the game). Do not release it.' }
 
 if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value
