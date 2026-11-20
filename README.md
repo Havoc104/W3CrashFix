@@ -6,7 +6,7 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 **Also a diagnostic tool for the game's other crashes.** Whatever crashes the game, W3CrashFix saves a crash report on your PC: where the game crashed and how it got there, which files were involved and their versions, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). If you send it in, it helps find the causes of those crashes too, and the ones found so far are recognised on the report page with tips. Nothing is ever sent by the mod itself.
 
-**Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it also switches itself on (reported by a user), but there is no long-term test result from GOG yet. On the Epic version it currently turns itself off and does nothing (reported by a user). Any other store version is untested.
+**Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it currently turns itself off and does nothing (reported by a user). Any other store version is untested.
 
 **Playing on Epic? Please help to make it work for you.** Start the game once with the mod installed, then post `W3CrashFix.activity.log` (next to the mod, in `bin\x64_dx12`) in a [GitHub issue](https://github.com/Havoc104/W3CrashFix/issues) or in the Posts tab on Nexus Mods. Logs from the Epic version are what's needed to add support for it.
 
