@@ -4,7 +4,7 @@ Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**)
 
 It patches a bug in the game's code, in memory only, while the game runs. No game files are changed.
 
-**Also a diagnostic tool for the game's other crashes.** Whatever crashes the game, W3CrashFix saves a crash report on your PC: where the game crashed and how it got there, which files were involved and their versions, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). If you send it in, it helps find the causes of those crashes too, and the ones found so far are recognised on the report page with tips. Nothing is ever sent by the mod itself.
+**Also a diagnostic tool for the game's other crashes.** Whatever crashes the game, W3CrashFix saves a crash report on your PC: where the game crashed and how it got there, which files were involved and their versions, which mods and add-ons were loaded, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). If you send it in, it helps find the causes of those crashes too, and the ones found so far are recognised on the report page with tips. Nothing is ever sent by the mod itself.
 
 **Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it is not confirmed: an older version of the mod turned itself off there. Since 1.8.0 the mod also finds the game's code when it sits at a different place, so it may work now. Any other store version is untested.
 
@@ -67,7 +67,7 @@ Other ways of installing DLSS 5 (for example DLSS Manager) are untested.
 
 W3CrashFix changes no game files and no scripts, so it should work alongside other mods. That can't be promised for every mod: only what is listed under "Tested with" has actually been played with.
 
-**A crash report names your in-game mods.** In-game mods are the ones the game itself loads: the folders in the game's `Mods` folder, and add-ons in its `DLC` folder. The mod notes their folder names at the start of its log, and a crash report lists them, so that whoever reads the report can rule them in or out. Nothing is switched off because of a mod. DLL and ASI mods (ReShade, RenoDX, DLSS add-ons, other ASI plugins) are not listed.
+**A crash report names your mods.** In-game mods are the ones the game itself loads: the folders in the game's `Mods` folder, and add-ons in its `DLC` folder. The mod notes their folder names at the start of its log, and a crash report lists them, so that whoever reads the report can rule them in or out. Nothing is switched off because of a mod. Since 2.1.0 the log and the crash report also list the other DLL and ASI files loaded from the game folder that are not the game's own (an ASI loader, ReShade, RenoDX, DLSS add-ons, a script extender, other ASI plugins), with their versions.
 
 ## Installation
 
@@ -121,7 +121,7 @@ Every 30 seconds the mod adds a status line to the log, including live descripto
 
 ### Settings
 
-The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini`, which you can open with Notepad:
+The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini`, which you can open with Notepad. Since 2.1.0 the file itself explains every setting, in a short note above its line.
 
 ```ini
 [W3CrashFix]
@@ -160,19 +160,19 @@ On a game version the mod does not support, the window does not appear: the fix 
 
 ### If the game crashes
 
-**A crash report from W3CrashFix doesn't mean W3CrashFix caused the crash.** The mod notices every crash of the game, also crashes it has nothing to do with, and saves a report about it. The report's verdict says which crash it was, and whether there is any sign that W3CrashFix was involved: it checks the crash address and the whole call stack for W3CrashFix's own code, and says whether its fix did anything in that session. In the crash reports sent so far, W3CrashFix's code was never part of the crash.
+**A crash report from W3CrashFix doesn't mean W3CrashFix caused the crash.** The mod notices every crash of the game, also crashes it has nothing to do with, and saves a report about it. The report's verdict says which crash it was, and whether there is any sign that W3CrashFix was involved: it checks the crash address and the whole call stack for W3CrashFix's own code, and says whether its fix did anything in that session. When a mod, script extender, overlay or other add-on is in the call stack, the verdict names it, because it may be involved. In the crash reports sent so far, W3CrashFix's code was never part of the crash.
 
 The mod notices a crash and helps you report it:
 
 - It writes what crashed (file and offset) into its activity log.
-- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: the date and time of the crash, mod version, a random report id, the in-game mods that were enabled, whether the fix was active, the crash address and the processor's registers, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file. The report page shows the date and time of the crash too; opened again more than an hour later, it says it belongs to an older crash, so an old log isn't mistaken for a new one.
+- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: the date and time of the crash, mod version, a random report id, the in-game mods that were enabled and the other DLL and ASI files that were loaded, whether the fix was active, the crash address with the call stack and the processor's registers, the graphics card with its driver and state, the game's graphics settings, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file. The report page shows the date and time of the crash too; opened again more than an hour later, it says it belongs to an older crash, so an old log isn't mistaken for a new one.
 - It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log**.
 
 **Sending a report.** The button opens an upload page of the author's online storage (pCloud) and copies the crash log's path at the same time. On that page, click **Click Here to Add Files**, press Ctrl+V in the window that opens, and then Enter. Or drag the crash log from the small folder window onto the page; that window asks Windows to keep it on top. Then type any name you like (a made-up one is fine) and click Upload. You don't need an account. Sent the wrong file by mistake? No problem: anything that isn't a W3CrashFix log or crash dump is deleted. You can just send the right file afterwards.
 
 **The report page is a file on your own PC, not a website, and the mod itself never connects to the internet.** Only your browser does, and only when you click the button. Nothing leaves your PC unless you upload the file yourself. The reason the report is shown in your browser is explained at the bottom of that page.
 
-**What a report contains.** The crash log holds the summary and the mod's activity log of the crashed session: technical data. It can include the folder the game is installed in and the folder names of your in-game mods (see [Other mods](#other-mods)). Only the author can see uploaded files. A report sent this way can't be answered; for questions, use the Posts tab on Nexus Mods or the issues here on GitHub.
+**What a report contains.** The crash log holds the summary and the mod's activity log of the crashed session: technical data. It can include the folder the game is installed in, the folder names of your in-game mods and the file names of other DLL and ASI mods in the game folder (see [Other mods](#other-mods)). Only the author can see uploaded files. A report sent this way can't be answered; for questions, use the Posts tab on Nexus Mods or the issues here on GitHub.
 
 **The report id** is a random number made on your PC the first time the mod works. Its only use is that several reports from the same machine/installation can be recognised as such. It is not derived from your hardware, Windows or your name, and it says nothing about you. It is kept as `ReportId` in `W3CrashFix.ini`; remove that line to get a new one.
 
