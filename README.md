@@ -207,15 +207,17 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 
 ## Changelog
 
+The name after a line says whose idea it was: Havoc's, Claude's, or something a player's log showed.
+
 ### 2.1.0-5.0.16
 
 A crash report now shows by itself what else was running in the game, so you no longer have to tell us. So far twenty-six crash reports from sixteen players have arrived; thank you to everyone who sent one.
 
-- Crash report and activity log: the **other DLL and ASI files in the game folder** that are not the game's own, with their versions: an ASI loader, ReShade, a script extender, ASI mods and so on. In-game mods were already listed.
-- Crash report: when a file that is **not part of the game or Windows** is in the call stack (a mod, script extender, overlay or other add-on), the verdict names it, because it may be involved.
-- Report page and send page: no more requests to put "clean" or "no crash" in the name of your upload. The log shows it.
-- `W3CrashFix.ini`: **every setting has a short explanation** above its line. They are added at the next game start; your values stay as they are.
-- Activity log: "game settings changed" is only written when a setting really changed. On some PCs it was written every 30 seconds.
+- Crash report and activity log: the **other DLL and ASI files in the game folder** that are not the game's own, with their versions: an ASI loader, ReShade, a script extender, ASI mods and so on. In-game mods were already listed. - Claude
+- Crash report: when a file that is **not part of the game or Windows** is in the call stack (a mod, script extender, overlay or other add-on), the verdict names it, because it may be involved. - Havoc
+- Report page and send page: no more requests to put "clean" or "no crash" in the name of your upload. The log shows it. - Havoc
+- `W3CrashFix.ini`: **every setting has a short explanation** above its line. They are added at the next game start; your values stay as they are. - Havoc
+- Activity log: "game settings changed" is only written when a setting really changed. On some PCs it was written every 30 seconds. - Claude, from a player's log
 - The descriptor page fix is unchanged.
 
 **Do I need to update?** The fix itself is the same. If you send crash logs, 2.1.0's logs tell more about what else was loaded, so it's recommended; otherwise there is no hurry.
@@ -224,16 +226,16 @@ A crash report now shows by itself what else was running in the game, so you no 
 
 W3CrashFix is now also a **diagnostic tool for the game's other crashes**. Thanks to everyone who sent a crash log: twenty-one reports from thirteen players have come in since 1.7.0, and they showed what a crash report needs to say. They also showed a second crash that six players run into, "Gpu Crash for unknown reasons" (see [Known issue](#known-issue-gpu-crash-for-unknown-reasons)).
 
-- Crash report: **the state of the graphics card.** Every report says whether the graphics card was still working and, if not, why Windows stopped it.
-- New setting **`GpuCrashDetails`** (off by default): with `1`, a GPU crash report also says which work the graphics card had not finished and where a bad memory access happened. See [Settings](#settings).
-- New setting **`CrashDump`** (off by default): with `1`, a crash also saves a crash dump next to the crash log. The report page lists it as an optional second file to send.
-- Crash report: the **graphics driver version**, the game's **graphics settings** (ray tracing, path tracing, upscaler, frame generation, resolution), the **files in the call stack with their versions**, and **what happened just before** the crash (a loading screen, an alt-tab).
-- Crash report: a crash at an empty address now has a call stack too.
-- Crash report: the verdict says whether there is **any sign that W3CrashFix was involved**: it checks the crash address and the whole call stack for W3CrashFix's own code.
-- Report page: **known crashes** are recognised, with tips that may help. The first one is the GPU crash.
-- Report page: the Send button always stays in view, and a wrongly sent file is no problem.
-- `W3CrashFix.ini`: a tip for players with more than one installation of the game.
-- Installer: Uninstall also removes the crash dump.
+- Crash report: **the state of the graphics card.** Every report says whether the graphics card was still working and, if not, why Windows stopped it. - Claude
+- New setting **`GpuCrashDetails`** (off by default): with `1`, a GPU crash report also says which work the graphics card had not finished and where a bad memory access happened. See [Settings](#settings). - Claude
+- New setting **`CrashDump`** (off by default): with `1`, a crash also saves a crash dump next to the crash log. The report page lists it as an optional second file to send. - Claude
+- Crash report: the **graphics driver version**, the game's **graphics settings** (ray tracing, path tracing, upscaler, frame generation, resolution), the **files in the call stack with their versions**, and **what happened just before** the crash (a loading screen, an alt-tab). - Claude
+- Crash report: a crash at an empty address now has a call stack too. - Claude
+- Crash report: the verdict says whether there is **any sign that W3CrashFix was involved**: it checks the crash address and the whole call stack for W3CrashFix's own code. - Havoc
+- Report page: **known crashes** are recognised, with tips that may help. The first one is the GPU crash. - Claude
+- Report page: the Send button always stays in view, and a wrongly sent file is no problem. - Havoc
+- `W3CrashFix.ini`: a tip for players with more than one installation of the game. - Havoc
+- Installer: Uninstall also removes the crash dump. - Claude
 - The descriptor page fix is unchanged.
 
 **Why 2.0.0?** Confession time: we broke our own versioning rule. W3CrashFix 1.0.0 was just the fix. After 1.2.0 I set a rule: the first digit changes when the mod changes in a big way. Then 1.4.1 added crash reports, the versions after it added much more, and the first digit stayed a 1. It should have become a 2 back then, and neither of us noticed: not me, and not Claude, who proposes the version numbers. The published versions keep their numbers, so nothing gets confusing; this release, which makes W3CrashFix a diagnostic tool, is where the 2 finally lands.
@@ -250,12 +252,12 @@ A small correction release: internal corrections in the source and the settings 
 
 Thanks to everyone who sent a crash log. Twelve logs from nine players have come in so far, and they shaped this release. None of them was the crash this fix is made for: in every one the fix was active and the heaps stayed low. One of them was a 97-minute session on the GOG version.
 
-- Crash report: the **call stack has no limit** any more. Until now it stopped after 16 places; in one report a script extender showed up at place 13, and what led to it was cut off.
-- Crash report: the **date and time of the crash** are at the top of the crash log and on the report page. If you open the report page again later, it says that it belongs to an older crash. One player sent the same log twice, and there was no way to tell.
-- New: **send your log without a crash.** The mod writes `W3CrashFix-send-log.html` next to itself at every game start. Open it, and the same Send button uploads your `W3CrashFix.activity.log`. Every log is welcome, with or without other mods; logs from the **Epic version** are especially helpful. See [If the game crashes](#if-the-game-crashes).
-- Report page: every crash log is welcome, also without a test. It helps even more if you also try the same part on a clean game, without your other mods.
-- **Ready for game patches that only move code.** The mod now checks every function it uses from the first byte to the last. If a game update only moves them to other places, it finds them there and the fix keeps working without a new version. If the code itself changed, the fix turns itself off as before.
-- Installer: Uninstall also removes the send page.
+- Crash report: the **call stack has no limit** any more. Until now it stopped after 16 places; in one report a script extender showed up at place 13, and what led to it was cut off. - Havoc
+- Crash report: the **date and time of the crash** are at the top of the crash log and on the report page. If you open the report page again later, it says that it belongs to an older crash. One player sent the same log twice, and there was no way to tell. - Claude, after a player's upload
+- New: **send your log without a crash.** The mod writes `W3CrashFix-send-log.html` next to itself at every game start. Open it, and the same Send button uploads your `W3CrashFix.activity.log`. Every log is welcome, with or without other mods; logs from the **Epic version** are especially helpful. See [If the game crashes](#if-the-game-crashes). - Havoc
+- Report page: every crash log is welcome, also without a test. It helps even more if you also try the same part on a clean game, without your other mods. - Havoc
+- **Ready for game patches that only move code.** The mod now checks every function it uses from the first byte to the last. If a game update only moves them to other places, it finds them there and the fix keeps working without a new version. If the code itself changed, the fix turns itself off as before. - Claude
+- Installer: Uninstall also removes the send page. - Claude
 - The descriptor page fix is unchanged.
 
 **Do I need to update?** It's recommended. The fix itself is the same, but 1.8.0 keeps working after a game patch that only moves code, and its crash reports tell more.
@@ -266,13 +268,13 @@ And no, we're not playing GTA 6. We've got better things to do. 😉
 
 Thanks to everyone who sent a crash log. The first logs that came in through the report page already led to this release: they showed where the crash report could tell more. So far seven crash reports from six players have arrived. None of them was the crash this fix is made for, and every one of them helped.
 
-- Crash report: it now lists **all** your in-game mods, with their number. Before, a long list was cut off after about 600 characters, so with many mods it didn't show which ones were enabled.
-- Crash report: it now also shows the **call stack**, a short list of places in the game's code that led to the crash. Two players' crashes stopped at the same place, where the game halts itself when something goes wrong; only the code that led there can show what went wrong.
-- Crash report: the verdict also recognises the descriptor heap crash when it shows up one step deeper in the game's code.
-- You can now **personalise your report id**. `W3CrashFix.ini` explains how, right above the `ReportId` line: add your own text before or after the id, for example `MyName_0123456789ABCDEF`, and keep the 16 characters of the id itself, so your new crash logs can still be matched with the ones you sent before. Before this release, the mod replaced any id it didn't make itself with a new random one.
-- Installer: **Uninstall leaves no traces**: it now also removes the activity logs.
-- After a crash, the small folder window gets a little more time and up to four requests to stay on top of the browser. Windows can still refuse it, but less often.
-- Clearer wording about the standalone version: only one `dinput8.dll` can be in the folder.
+- Crash report: it now lists **all** your in-game mods, with their number. Before, a long list was cut off after about 600 characters, so with many mods it didn't show which ones were enabled. - Havoc
+- Crash report: it now also shows the **call stack**, a short list of places in the game's code that led to the crash. Two players' crashes stopped at the same place, where the game halts itself when something goes wrong; only the code that led there can show what went wrong. - Havoc
+- Crash report: the verdict also recognises the descriptor heap crash when it shows up one step deeper in the game's code. - Claude
+- You can now **personalise your report id**. `W3CrashFix.ini` explains how, right above the `ReportId` line: add your own text before or after the id, for example `MyName_0123456789ABCDEF`, and keep the 16 characters of the id itself, so your new crash logs can still be matched with the ones you sent before. Before this release, the mod replaced any id it didn't make itself with a new random one. - Havoc
+- Installer: **Uninstall leaves no traces**: it now also removes the activity logs. - Havoc
+- After a crash, the small folder window gets a little more time and up to four requests to stay on top of the browser. Windows can still refuse it, but less often. - Havoc
+- Clearer wording about the standalone version: only one `dinput8.dll` can be in the folder. - Havoc
 - The descriptor page fix is unchanged.
 
 **Do I need to update?** The fix itself is the same, so if your game runs fine, you can keep your version. But if you ever send a crash log, a report from 1.7.0 tells much more. Every log counts, also when it isn't the crash this mod fixes: send it with the button on the report page.
@@ -281,22 +283,22 @@ Thanks to everyone who sent a crash log. The first logs that came in through the
 
 ### 1.6.1-5.0.16
 
-- Crash report, sending: the **Send the crash log** button now also copies the crash log's path. On the upload page you click **Click Here to Add Files**, paste with Ctrl+V and press Enter, so the folder window is no longer needed. In 1.6.0 that window went behind the browser as soon as you clicked there. Dragging still works.
-- The small folder window now asks Windows to keep it on top of other windows. Windows doesn't always allow that; the activity log says whether it did.
-- The report page is shorter: it shows only whether the fix was active and the verdict. The full summary stays at the top of the crash log, which is the file you send.
+- Crash report, sending: the **Send the crash log** button now also copies the crash log's path. On the upload page you click **Click Here to Add Files**, paste with Ctrl+V and press Enter, so the folder window is no longer needed. In 1.6.0 that window went behind the browser as soon as you clicked there. Dragging still works. - Claude
+- The small folder window now asks Windows to keep it on top of other windows. Windows doesn't always allow that; the activity log says whether it did. - Havoc
+- The report page is shorter: it shows only whether the fix was active and the verdict. The full summary stays at the top of the crash log, which is the file you send. - Havoc
 - The descriptor page fix is unchanged.
 
 **Do I need to update?** No, the fix itself is the same. 1.6.1 only makes sending a crash report easier.
 
 ### 1.6.0-5.0.16
 
-- Crash report, sending: the report page now has one button, **Send the crash log**. It opens an upload page of the author's online storage, where you drop the crash log; no account is needed and only the author sees the file. It replaces the two buttons for GitHub and Nexus Mods. The mod itself still never connects to the internet. See [If the game crashes](#if-the-game-crashes).
-- Crash report, easier to use: the crash log now has a folder of its own, `W3CrashFix crash report`, and after a crash a small folder window opens on it, so the file is ready to drag.
-- Crash report, more useful: the summary now also shows the processor's registers, the memory situation, whether the game build is supported, the in-game mods that were enabled, and a random report id that lets several reports from one installation be recognised.
-- Settings: one readable file, `W3CrashFix.ini`, replaces the small files `W3CrashFix.accepted` and `W3CrashFix.noreport`. Existing ones are taken over automatically. See [Settings](#settings).
-- The mod's log is now called `W3CrashFix.activity.log`, so it can't be mixed up with the crash log. Logs under the old name are tidied up at the first start.
-- License: the copyright line now names one copyright holder, and the license has a new section, "Additional permission", which lets CD PROJEKT RED S.A. use the fix without the usual notices. See [LICENSE](LICENSE). Because the license text changed, the license window appears once more after updating, and says why.
-- Installer: it now has an icon, is called installer/uninstaller, shows the license in a window that scrolls, names Ultimate ASI Loader as the one supported loader, and on Uninstall also removes the settings file and what a crash report left.
+- Crash report, sending: the report page now has one button, **Send the crash log**. It opens an upload page of the author's online storage, where you drop the crash log; no account is needed and only the author sees the file. It replaces the two buttons for GitHub and Nexus Mods. The mod itself still never connects to the internet. See [If the game crashes](#if-the-game-crashes). - Havoc and Claude
+- Crash report, easier to use: the crash log now has a folder of its own, `W3CrashFix crash report`, and after a crash a small folder window opens on it, so the file is ready to drag. - Havoc
+- Crash report, more useful: the summary now also shows the processor's registers, the memory situation, whether the game build is supported, the in-game mods that were enabled, and a random report id that lets several reports from one installation be recognised. - Havoc and Claude
+- Settings: one readable file, `W3CrashFix.ini`, replaces the small files `W3CrashFix.accepted` and `W3CrashFix.noreport`. Existing ones are taken over automatically. See [Settings](#settings). - Havoc
+- The mod's log is now called `W3CrashFix.activity.log`, so it can't be mixed up with the crash log. Logs under the old name are tidied up at the first start. - Havoc
+- License: the copyright line now names one copyright holder, and the license has a new section, "Additional permission", which lets CD PROJEKT RED S.A. use the fix without the usual notices. See [LICENSE](LICENSE). Because the license text changed, the license window appears once more after updating, and says why. - Havoc
+- Installer: it now has an icon, is called installer/uninstaller, shows the license in a window that scrolls, names Ultimate ASI Loader as the one supported loader, and on Uninstall also removes the settings file and what a crash report left. - Havoc
 - The descriptor page fix is unchanged.
 
 **Do I need to update?** No. If an earlier version works for you, you can keep it: the fix itself is the same.
@@ -305,31 +307,31 @@ Updating does help the project, though. If you ever run into a crash, the newest
 
 ### 1.5.0-5.0.16
 
-- New: a license window at the first game start. It shows the MIT License and asks you to accept it before the fix is switched on; declining removes the mod from the game. See [The license window](#the-license-window).
-- Installer: the license is shown on Install, a new **Run game** button, and Uninstall now also removes the files the license window leaves behind.
+- New: a license window at the first game start. It shows the MIT License and asks you to accept it before the fix is switched on; declining removes the mod from the game. See [The license window](#the-license-window). - Havoc
+- Installer: the license is shown on Install, a new **Run game** button, and Uninstall now also removes the files the license window leaves behind. - Havoc and Claude
 - The descriptor page fix is unchanged.
 
 ### 1.4.1-5.0.16
 
-- New: crash report. When the game crashes, the mod writes what crashed into the log, saves the session as `W3CrashFix.crash.log` with a summary and a verdict, and opens a local page with two buttons to report it (GitHub or Nexus Mods). The mod itself sends nothing. See [If the game crashes](#if-the-game-crashes).
+- New: crash report. When the game crashes, the mod writes what crashed into the log, saves the session as `W3CrashFix.crash.log` with a summary and a verdict, and opens a local page with two buttons to report it (GitHub or Nexus Mods). The mod itself sends nothing. See [If the game crashes](#if-the-game-crashes). - Havoc and Claude
 - The descriptor page fix is unchanged.
 
 ### 1.3.0-5.0.16
 
-- The GOG version is now listed as supported: a user's log shows the fix switches itself on there, at the same addresses as on Steam. There is no long-term test result from GOG yet.
-- In the log, NVIDIA's downloaded DLSS files now show their feature folder, for example `dlssg\160_E658700.bin` instead of `160_E658700.bin`. Several of those files share one file name, so the name alone didn't say which one created a heap.
+- The GOG version is now listed as supported: a user's log shows the fix switches itself on there, at the same addresses as on Steam. There is no long-term test result from GOG yet. - from a player's log
+- In the log, NVIDIA's downloaded DLSS files now show their feature folder, for example `dlssg\160_E658700.bin` instead of `160_E658700.bin`. Several of those files share one file name, so the name alone didn't say which one created a heap. - Claude
 - The descriptor page fix is unchanged.
 
 ### 1.2.0-5.0.16
 
-- The log now names the file that created each descriptor heap, for example `caller=witcher3.exe+0x2809F44` instead of a bare address. The first time a file shows up, its full path is logged once (a path inside your user profile is written as `%USERPROFILE%`). This shows whether heaps come from the game itself or from another DLL, such as a DLSS add-on.
-- On a game build the mod doesn't recognise (another store version or a game update), the log now gets `diag:` lines that describe where the game's code differs. Posting that log is what is needed to add support for that build. As before, nothing is patched in that case.
-- Added a "Tested with" section that names the DLSS 5 setup used during testing.
+- The log now names the file that created each descriptor heap, for example `caller=witcher3.exe+0x2809F44` instead of a bare address. The first time a file shows up, its full path is logged once (a path inside your user profile is written as `%USERPROFILE%`). This shows whether heaps come from the game itself or from another DLL, such as a DLSS add-on. - Claude
+- On a game build the mod doesn't recognise (another store version or a game update), the log now gets `diag:` lines that describe where the game's code differs. Posting that log is what is needed to add support for that build. As before, nothing is patched in that case. - Claude
+- Added a "Tested with" section that names the DLSS 5 setup used during testing. - Havoc
 - The descriptor page fix is unchanged.
 
 ### 1.1.0-5.0.16
 
-- Removed "fix 2", the guard against invalid handle IDs after fast travel. It was added after two crashes at `witcher3.exe+0x1eecf31` and `+0x1eece9d` on the author's PC. In all play sessions since then, the guard never had to block a single lookup, and a test session with heavy fast travel and without the guard didn't crash. There is no sign that those two crashes came from a bug in the game itself, so the mod no longer touches that code.
+- Removed "fix 2", the guard against invalid handle IDs after fast travel. It was added after two crashes at `witcher3.exe+0x1eecf31` and `+0x1eece9d` on the author's PC. In all play sessions since then, the guard never had to block a single lookup, and a test session with heavy fast travel and without the guard didn't crash. There is no sign that those two crashes came from a bug in the game itself, so the mod no longer touches that code. - Havoc
 - The descriptor page fix is unchanged.
 
 ### 1.0.0-5.0.16
