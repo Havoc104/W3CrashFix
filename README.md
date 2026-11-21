@@ -6,9 +6,9 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 **Also a diagnostic tool for the game's other crashes.** Whatever crashes the game, W3CrashFix saves a crash report on your PC: where the game crashed and how it got there, which files were involved and their versions, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). If you send it in, it helps find the causes of those crashes too, and the ones found so far are recognised on the report page with tips. Nothing is ever sent by the mod itself.
 
-**Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it currently turns itself off and does nothing (reported by a user). Any other store version is untested.
+**Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it is not confirmed: an older version of the mod turned itself off there. Since 1.8.0 the mod also finds the game's code when it sits at a different place, so it may work now. Any other store version is untested.
 
-**Playing on Epic? Please help to make it work for you.** Start the game once with the mod installed, then post `W3CrashFix.activity.log` (next to the mod, in `bin\x64_dx12`) in a [GitHub issue](https://github.com/Havoc104/W3CrashFix/issues) or in the Posts tab on Nexus Mods. Logs from the Epic version are what's needed to add support for it.
+**Playing on Epic? Your log can settle it.** Start the game once with the mod installed, then quit. Open `W3CrashFix-send-log.html` (next to the mod, in `bin\x64_dx12`) and click the send button. The log shows whether the fix switched on, also if your game never crashes. Nothing is sent unless you click the button.
 
 | Bug | Symptom |
 |---|---|
@@ -45,7 +45,7 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 
 ## Requirements
 
-- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.activity.log` in an issue helps to add support.
+- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. On the Epic version it may work, but that is not confirmed; see the top of this page.
 
 **Version numbers** have the form `<mod version>-<game version>`. For example, `2.1.0-5.0.16` is mod version 2.1.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
@@ -180,7 +180,7 @@ The mod notices a crash and helps you report it:
 
 **Your report is always welcome, also without a test.** It helps even more if you also check whether the crash happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too; the log shows by itself which mods were there. A crash on a clean game points at the game itself; a crash that only happens with mods points at one of them. Logs of both, with and without mods, from the same PC are especially helpful: the report id shows they belong together, and the two can be compared side by side.
 
-**No crash? Your log is welcome too.** A session without a crash, with or without other mods, shows how the game behaves when all goes well, and can be compared with sessions that crashed. To send it, open `W3CrashFix-send-log.html` in the game's `bin\x64_dx12` folder (the mod writes it at every game start). It has the same **Send** button as the report page, for `W3CrashFix.activity.log`. Send it after you close the game and before you start it again; at the next start the log becomes `W3CrashFix.activity.previous.log`, which you can send instead. Logs from the **Epic version** are especially helpful: the fix doesn't work there yet, and the log shows how that build differs. Long sessions on the **GOG version** help too, since there is no long-term result from GOG yet.
+**No crash? Your log is welcome too.** A session without a crash, with or without other mods, shows how the game behaves when all goes well, and can be compared with sessions that crashed. To send it, open `W3CrashFix-send-log.html` in the game's `bin\x64_dx12` folder (the mod writes it at every game start). It has the same **Send** button as the report page, for `W3CrashFix.activity.log`. Send it after you close the game and before you start it again; at the next start the log becomes `W3CrashFix.activity.previous.log`, which you can send instead. Logs from the **Epic version** are especially helpful: it isn't confirmed that the fix switches on there, and the log shows it. Long sessions on the **GOG version** help too, since there is no long-term result from GOG yet.
 
 The game's own crash reporter may also appear after a crash. That one reports to the game's developers; the W3CrashFix page is only about this mod. You can use both.
 
