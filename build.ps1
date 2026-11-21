@@ -147,6 +147,8 @@ if (Test-Path $gameExe) {
 if ($code -eq 0) {
     if ($log -notmatch 'caller=witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: heap caller was not named' }
     if ($log -notmatch 'driver: \d+\.\d+\.\d+\.\d+') { throw 'test_diag: the graphics driver version was not logged (2.0.0)' }
+    # after 2.0.0: the other DLL and ASI files in the game folder (the stand-in game may list none or its own test files)
+    if ($log -notmatch 'other files: DLL and ASI files in the game folder that are not the game''s own: ') { throw 'test_diag: the other-files line is missing' }
     # 2.0.0: the game's render settings, read from Documents\The Witcher 3\dx12user.settings (or "not found" on a PC
     # without the game); the file's path must never be in the log (it holds the Windows user name).
     if ($log -notmatch 'game settings: (ray tracing (ON|off|\?), path tracing (ON|off|\?) \||not found)') { throw 'test_diag: the game settings line is missing (2.0.0)' }
@@ -246,6 +248,12 @@ if ($code -eq 0) {
         if (([regex]::Matches($iniText, '; More than one installation of the game\?')).Count -ne 1 -or $iniText -notmatch '; More than one installation[^\r\n]*\r?\n; Allowed: ') { throw 'test_diag: W3CrashFix.ini lacks the line about several installations above "; Allowed:" (or has it twice)' }
     }
     if (-not $cl.Contains("Report id: $rid")) { throw 'test_diag: the crash summary does not show the report id from W3CrashFix.ini' }
+    # 2.1.0: every setting has its explanation, exactly once (also after several game starts), right above its line.
+    $iniAll = Get-Content "$t\W3CrashFix.ini" -Raw
+    foreach ($s in @(@('GpuCrashDetails', 'Takes effect at the next game start\.'), @('CrashDump', 'Takes effect at the next game start\.'), @('OpenReportPage', 'The crash log is saved either way\.'))) {
+        if (([regex]::Matches($iniAll, "; $($s[0]): ")).Count -ne 1 -or $iniAll -notmatch "$($s[1])\r?\n$($s[0])=") { throw "test_diag: W3CrashFix.ini lacks the explanation above $($s[0])= (or has it twice)" }
+    }
+    if ($iniAll -match '(?m)^LicenseAccepted=' -and ([regex]::Matches($iniAll, '; LicenseAccepted: ')).Count -ne 1) { throw 'test_diag: W3CrashFix.ini lacks the explanation above LicenseAccepted= (or has it twice)' }
     # The report page: one button, to the upload page; the folder link; nothing left of the two old buttons.
     foreach ($need in 'Send the crash log', 'u.pcloud.com/#/puplink?code=', 'A small folder window has opened in the lower right corner that holds only this file', "Copy the file's path", 'W3CrashFix crash report\W3CrashFix.crash.log" onclick="cp(this)"', 'Files are uploaded!', 'Why use my browser?', 'The mod itself never connects to the internet') {
         if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" }

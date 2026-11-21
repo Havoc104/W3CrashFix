@@ -47,7 +47,7 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. The Epic version is not supported yet: its game executable differs, so the fix turns itself off there. If you play on Epic or another store version, posting your `W3CrashFix.activity.log` in an issue helps to add support.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `2.0.0-5.0.16` is mod version 2.0.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `2.1.0-5.0.16` is mod version 2.1.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -112,7 +112,7 @@ ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use du
 Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 2.0.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 2.1.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -178,7 +178,7 @@ The mod notices a crash and helps you report it:
 
 **Crashes with another cause are welcome too.** The crash log is made for every crash, not only for the one W3CrashFix fixes. Such reports might be analysed in an attempt to provide a fix. That is not a promise.
 
-**Your report is always welcome, also without a test.** It helps even more if you also check whether the crash happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too and put "clean" in the name you give the upload. A crash on a clean game points at the game itself; a crash that only happens with mods points at one of them. Logs of both, with and without mods, from the same PC are especially helpful: the report id shows they belong together, and the two can be compared side by side.
+**Your report is always welcome, also without a test.** It helps even more if you also check whether the crash happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too; the log shows by itself which mods were there. A crash on a clean game points at the game itself; a crash that only happens with mods points at one of them. Logs of both, with and without mods, from the same PC are especially helpful: the report id shows they belong together, and the two can be compared side by side.
 
 **No crash? Your log is welcome too.** A session without a crash, with or without other mods, shows how the game behaves when all goes well, and can be compared with sessions that crashed. To send it, open `W3CrashFix-send-log.html` in the game's `bin\x64_dx12` folder (the mod writes it at every game start). It has the same **Send** button as the report page, for `W3CrashFix.activity.log`. Send it after you close the game and before you start it again; at the next start the log becomes `W3CrashFix.activity.previous.log`, which you can send instead. Logs from the **Epic version** are especially helpful: the fix doesn't work there yet, and the log shows how that build differs. Long sessions on the **GOG version** help too, since there is no long-term result from GOG yet.
 
@@ -206,6 +206,19 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 **The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
 
 ## Changelog
+
+### 2.1.0-5.0.16
+
+A crash report now shows by itself what else was running in the game, so you no longer have to tell us. So far twenty-six crash reports from sixteen players have arrived; thank you to everyone who sent one.
+
+- Crash report and activity log: the **other DLL and ASI files in the game folder** that are not the game's own, with their versions: an ASI loader, ReShade, a script extender, ASI mods and so on. In-game mods were already listed.
+- Crash report: when a file that is **not part of the game or Windows** is in the call stack (a mod, script extender, overlay or other add-on), the verdict names it, because it may be involved.
+- Report page and send page: no more requests to put "clean" or "no crash" in the name of your upload. The log shows it.
+- `W3CrashFix.ini`: **every setting has a short explanation** above its line. They are added at the next game start; your values stay as they are.
+- Activity log: "game settings changed" is only written when a setting really changed. On some PCs it was written every 30 seconds.
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** The fix itself is the same. If you send crash logs, 2.1.0's logs tell more about what else was loaded, so it's recommended; otherwise there is no hurry.
 
 ### 2.0.0-5.0.16
 
@@ -356,7 +369,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 to 2.0.0 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 to 2.1.0 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
 
 **Who did what.** The bug was only found because I let Claude analyse my crash dumps, and the technical explanations in this README were drafted by Claude. Since version 1.0.0, most changes were my ideas and every decision was mine; Claude worked out the details and wrote the code. For example, I wanted the mod to open the crash log after a crash and let players send it to me; showing that in a single browser page was Claude's idea, so a crashing game opens one window instead of several.
 

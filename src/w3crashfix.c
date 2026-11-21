@@ -253,12 +253,72 @@ static void game_settings(void) {
                 }
         *e = c; l = e; while (*l == '\n' || *l == '\r') l++;
     }
+    // Built in a buffer of its own first: a 2.0.0 log (20 Nov 2026) showed "game settings changed" every 30 s with the
+    // same values, so something on that PC rewrites the file without changing it. Only a real change of these values is
+    // logged now (Onno, 20 Nov 2026: "game settings fix?").
+    static char now[sizeof g_gameSettings];
     int on = !strcmp(vals[0], "true"), pt = !strcmp(vals[1], "true");
-    int n = snprintf(g_gameSettings, sizeof g_gameSettings, "ray tracing %s, path tracing %s |",
+    int n = snprintf(now, sizeof now, "ray tracing %s, path tracing %s |",
                      on ? "ON" : vals[0][0] ? "off" : "?", pt ? "ON" : vals[1][0] ? "off" : "?");
-    for (size_t k = 0; k < sizeof keys / sizeof keys[0] && n < (int)sizeof g_gameSettings - 60; k++)
-        if (vals[k][0]) n += snprintf(g_gameSettings + n, sizeof g_gameSettings - n, " %s=%s", keys[k], vals[k]);
+    for (size_t k = 0; k < sizeof keys / sizeof keys[0] && n < (int)sizeof now - 60; k++)
+        if (vals[k][0]) n += snprintf(now + n, sizeof now - n, " %s=%s", keys[k], vals[k]);
+    if (!first && !strcmp(now, g_gameSettings)) return;           // file rewritten, values the same
+    lstrcpyA(g_gameSettings, now);
     logf("game settings%s: %s", first ? "" : " changed", g_gameSettings);
+}
+
+// ---------------------------------------------------------------- other DLL and ASI files in the game folder (since 2.0.0)
+// Onno, 20 Nov 2026: "why would they need to put clean in if we can easily tell by the logs. we need this to work with
+// as little steps as possible for them". The log already lists the in-game mods; this lists the rest: every DLL or ASI
+// file loaded from the game's own folder (and its subfolders) that is not one of the game's own files, e.g. an ASI
+// loader, ReShade, a script extender, ASI mods, DLSS replacements. Logged as "other files:" at start and whenever the
+// list grows, and put into the crash summary. A report then shows by itself whether the game was clean. The game's
+// own files are taken from the 5.0.16 Steam folder; a file the game adds later would show up here until it is added.
+static char g_otherFiles[1024] = "not read yet";
+static void mod_version(HMODULE m, char *out, int sz);   // see "the call stack" below
+static const char *const g_gameOwn[] = { "witcher3.exe", "amd_ags_x64.dll", "amd_fidelityfx_framegeneration_dx12.dll",
+        "amd_fidelityfx_loader_dx12.dll", "amd_fidelityfx_upscaler_dx12.dll", "crashreporter.resources.dll", "cudart64_50_35.dll",
+        "d3d12core.dll", "d3d12sdklayers.dll", "d3d12stateobjectcompiler.dll", "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll",
+        "galaxy64.dll", "gfsdk_aftermath_lib.x64.dll", "gfsdk_hairworks.win64.dll", "gfsdk_ssao.win64.dll", "gfsdk_ssao_d3d12.win32.dll",
+        "gfsdk_ssao_d3d12.win64.dll", "glew32.dll", "grb_1_1_api3_x64.dll", "igxess.dll", "libcurl.dll", "libxell.dll", "libxess.dll",
+        "libxess_dx11.dll", "libxess_fg.dll", "msvcp110.dll", "normaliz.dll", "nvcamerasdk64.dll", "nvhair_x64.dll", "nvhairext_x64.dll",
+        "nvngx_dlss.dll", "nvngx_dlssd.dll", "nvngx_dlssg.dll", "physx3common_x64.dll", "physx3_x64.dll", "physx3cooking_x64.dll",
+        "physx3characterkinematic_x64.dll", "redgalaxy64.dll", "redtelemetrylib.dll", "sl.common.dll", "sl.dlss.dll", "sl.dlss_d.dll",
+        "sl.dlss_g.dll", "sl.interposer.dll", "sl.pcl.dll", "sl.reflex.dll", "steam_api64.dll", "wldap32.dll", "xaudio2_9redist.dll",
+        "xefx.dll", "xefx_loader.dll", "eossdk-win64-shipping.dll" };
+static int game_own(const char *file) {
+    for (size_t k = 0; k < sizeof g_gameOwn / sizeof g_gameOwn[0]; k++) if (!_stricmp(file, g_gameOwn[k])) return 1;
+    return 0;
+}
+static void other_files(void) {
+    typedef BOOL (WINAPI *EPM_t)(HANDLE, HMODULE *, DWORD, DWORD *);
+    static EPM_t epm; static int tried, lastCount = -1;
+    if (!tried) { tried = 1; epm = (EPM_t)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "K32EnumProcessModules"); }
+    if (!epm) return;
+    wchar_t root[MAX_PATH]; DWORD rl = GetModuleFileNameW(NULL, root, MAX_PATH);
+    if (!rl || rl >= MAX_PATH) return;
+    for (int up = 0; up < 3; up++) { wchar_t *s = wcsrchr(root, L'\\'); if (s) *s = 0; }   // ...\bin\x64_dx12\witcher3.exe -> game folder
+    size_t rootLen = wcslen(root);
+    HMODULE mods[512], self = NULL; DWORD need = 0;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)(void *)other_files, &self);
+    if (!epm(GetCurrentProcess(), mods, sizeof mods, &need)) return;
+    int n = (int)((need < sizeof mods ? need : sizeof mods) / sizeof mods[0]), count = 0, o = 0;
+    char out[1024]; out[0] = 0;
+    for (int i = 0; i < n; i++) {
+        wchar_t p[MAX_PATH]; DWORD pl = GetModuleFileNameW(mods[i], p, MAX_PATH);
+        if (!pl || pl >= MAX_PATH || mods[i] == self || _wcsnicmp(p, root, rootLen) || p[rootLen] != L'\\') continue;
+        char rel[MAX_PATH * 3]; WideCharToMultiByte(CP_UTF8, 0, p + rootLen + 1, -1, rel, sizeof rel, NULL, NULL);
+        const char *file = rel; for (const char *c = rel; *c; c++) if (*c == '\\' || *c == '/') file = c + 1;
+        if (game_own(file)) continue;
+        char ver[48]; mod_version(mods[i], ver, sizeof ver);
+        count++;
+        if (o < (int)sizeof out - 120) o += snprintf(out + o, sizeof out - o, "%s%s%s%s", count > 1 ? ", " : "", rel, ver[0] ? " " : "", ver);
+    }
+    if (count == lastCount) return;
+    lastCount = count;
+    if (!count) lstrcpyA(g_otherFiles, "none (only the game's own files and W3CrashFix)");
+    else snprintf(g_otherFiles, sizeof g_otherFiles, "%d: %s", count, out);
+    logf("other files: DLL and ASI files in the game folder that are not the game's own: %s", g_otherFiles);
 }
 
 // ---------------------------------------------------------------- hooks
@@ -652,7 +712,7 @@ static void install_fix(void) {
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "2.0.0-5.0.16"
+#define W3CF_VERSION "2.1.0-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[192] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -731,6 +791,11 @@ static void fmt_regs(const CONTEXT *c) {
 //    from the version resource of the file as it is loaded in memory (no file is opened). Then reports of one crash
 //    can show whether all players had the same, perhaps old, version of a script extender or other DLL.
 static char g_crStack[65536], g_crFiles[1024];
+// Files in the call stack that are not the game's own, not Windows' and not W3CrashFix: a script extender, an ASI mod,
+// an overlay, ReShade and so on. Onno, 20 Nov 2026, about crash reports with a script extender in every call stack:
+// "we should note the script extender (not just for this person) because we see it as a possible culprit". The verdict
+// names them as possibly involved; worded as a possibility, not a cause.
+static char g_crOthers[320];
 static int g_crOurs;            // W3CrashFix's own code is at the crash address or anywhere in the call stack (see the verdict)
 static DWORD64 g_crFrames[16]; static int g_crNFrames;   // the first addresses as numbers, for the verdict (it needs 4)
 static void mod_version(HMODULE m, char *out, int sz) {
@@ -756,8 +821,11 @@ static void fmt_stack(const CONTEXT *start) {
     HMODULE files[24]; int nfiles = 0;
     HMODULE self = NULL;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)(void *)fmt_stack, &self);
-    g_crStack[0] = 0; g_crFiles[0] = 0;
+    g_crStack[0] = 0; g_crFiles[0] = 0; g_crOthers[0] = 0;
     g_crNFrames = 0; g_crOurs = 0;
+    int on = 0;
+    char win[MAX_PATH]; UINT wl = GetWindowsDirectoryA(win, sizeof win);
+    if (!wl || wl >= sizeof win) wl = 0;
     for (; c.Rip || i == 0; i++) {
         if (g_crNFrames < (int)(sizeof g_crFrames / sizeof g_crFrames[0])) g_crFrames[g_crNFrames++] = c.Rip;
         if (n < (int)sizeof g_crStack - 300) {
@@ -781,6 +849,9 @@ static void fmt_stack(const CONTEXT *start) {
                 mod_version(m, ver, sizeof ver);
                 if (fn < (int)sizeof g_crFiles - 100)
                     fn += snprintf(g_crFiles + fn, sizeof g_crFiles - fn, "%s%s %s", nfiles > 1 ? ", " : "", file, ver[0] ? ver : "(no version)");
+                int windows = wl && pl > wl && !_strnicmp(path, win, wl) && (path[wl] == '\\' || path[wl] == '/');
+                if (m != self && m != (HMODULE)g_base && !windows && !game_own(file) && on < (int)sizeof g_crOthers - 80)
+                    on += snprintf(g_crOthers + on, sizeof g_crOthers - on, "%s%s", on ? ", " : "", file);
             }
         }
         if (c.Rsp < lo || c.Rsp + 8 > hi || (c.Rsp & 7)) break;
@@ -1034,6 +1105,59 @@ static void ini_note_report_id(void) {
     WriteFile(f, g_idNote, sizeof g_idNote - 1, &w, NULL);
     WriteFile(f, at, (DWORD)strlen(at), &w, NULL);
     CloseHandle(f);
+}
+// Every setting in W3CrashFix.ini gets a short explanation above its line (Onno, 21 Nov 2026: "all .ini settings should
+// have explanations in the next (test) build"); ReportId already had one, see g_idNote. A note is added once: it is
+// recognised by its first words ("; Key: "), so a note the user removed comes back, but one that is there is never
+// written twice or changed. Same rules as the ReportId note: game start only, plain encoding only, the setting lines
+// themselves are not touched.
+static void ini_note_settings(void) {
+    static const struct { const char *key, *note; } notes[] = {
+        { "LicenseAccepted",
+          "; LicenseAccepted: the license you accepted in the license window. Leave it as it is: without this line the\r\n"
+          "; license window comes back at the next game start, and the fix stays off until you accept.\r\n" },
+        { "GpuCrashDetails",
+          "; GpuCrashDetails: 1 = after a graphics card crash (\"Gpu Crash for unknown reasons\") the crash log also says which\r\n"
+          "; work the graphics card had not finished. 0 = off (default). It may cost a little frame rate on some PCs.\r\n"
+          "; Takes effect at the next game start.\r\n" },
+        { "CrashDump",
+          "; CrashDump: 1 = a crash also saves a crash dump, W3CrashFix.crash.dmp, next to the crash log. 0 = off (default).\r\n"
+          "; A dump shows much more than the log, but it can contain bits of the game's memory, such as file paths with\r\n"
+          "; your Windows user name. You choose whether to send it. Takes effect at the next game start.\r\n" },
+        { "OpenReportPage",
+          "; OpenReportPage: 1 = after a crash the report page and a small folder window open (default). 0 = nothing opens.\r\n"
+          "; The crash log is saved either way.\r\n" },
+    };
+    static char buf[16384], out[16384 + 2048];
+    HANDLE f = CreateFileW(g_ini, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!ok || got >= sizeof buf - 1 || (got >= 2 && (unsigned char)buf[0] == 0xFF && (unsigned char)buf[1] == 0xFE)) return;
+    buf[got] = 0;
+    size_t o = 0; int added = 0;
+    for (char *line = buf; *line; ) {
+        char *end = strchr(line, '\n'); size_t len = end ? (size_t)(end - line + 1) : strlen(line);
+        for (size_t k = 0; k < sizeof notes / sizeof notes[0]; k++) {
+            size_t kl = strlen(notes[k].key);
+            char mark[40]; snprintf(mark, sizeof mark, "; %s: ", notes[k].key);
+            if (!strncmp(line, notes[k].key, kl) && line[kl] == '=' && !strstr(buf, mark)) {
+                size_t nl = strlen(notes[k].note);
+                if (o + nl >= sizeof out) return;
+                memcpy(out + o, notes[k].note, nl); o += nl; added++;
+            }
+        }
+        if (o + len >= sizeof out) return;
+        memcpy(out + o, line, len); o += len;
+        line += len;
+    }
+    if (!added) return;
+    f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w; WriteFile(f, out, (DWORD)o, &w, NULL);
+    CloseHandle(f);
+    logf("settings: explanations added to W3CrashFix.ini for %d setting(s)", added);
 }
 static int report_id_ok(const char *s, int *hex16) {
     // 1.7.0: own text only before or after the 16 characters of the id, which must stay unbroken (16 hex digits in a
@@ -1477,7 +1601,12 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     // Worded as what was checked, not as a certainty (Onno agreed, 20 Nov 2026): the stack check is strong evidence, not
     // proof (a wrong page handed out earlier could make the game crash later somewhere else). So it says "no sign", and
     // adds that the fix rescued no pages only when that is true in this session.
-    static char notOurs[720];
+    static char notOurs[1100], others[440];
+    others[0] = 0;
+    if (g_crOthers[0])
+        snprintf(others, sizeof others, " Also in the call stack: %s, which %s not part of the game or Windows (a mod, script extender, "
+                 "overlay or other add-on), so %s may be involved.", g_crOthers, strchr(g_crOthers, ',') ? "are" : "is",
+                 strchr(g_crOthers, ',') ? "they" : "it");
     int stackKnown = ep->ContextRecord && strcmp(g_crStack, "not available");
     const char *why =
         g_crOurs ? "W3CrashFix's own code is in the call stack of this crash, so it may be involved: please send this crash log."
@@ -1486,8 +1615,8 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
         : stackKnown ? "There is no sign that W3CrashFix caused it: its own code is not at the crash address or in the call stack. "
                        "W3CrashFix only noticed the crash and saved this report."
         : "W3CrashFix only noticed the crash and saved this report.";
-    snprintf(notOurs, sizeof notOurs, "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x%X). %s%s", g_crashRva,
-             why, g_crOurs ? "" : " Something else crashed the game.");
+    snprintf(notOurs, sizeof notOurs, "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x%X). %s%s%s", g_crashRva,
+             why, g_crOurs ? "" : " Something else crashed the game.", others);
     const char *verdict =
         !g_buildOk ? "W3CrashFix does not support this build of the game, so it cannot tell which crash this is."
         : !g_crashRva ? "W3CrashFix did not find the place of its crash in this build of the game, so it cannot tell which crash this is."
@@ -1560,13 +1689,14 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
              "Graphics card: %s\r\n"
              "GPU state: %s\r\n"
              "Game settings: %s\r\n"
+             "Other DLL and ASI files: %s\r\n"
              "Descriptor heaps: %lld live + %lld sampler (peak %lld + %lld), %lld failed creations\r\n"
              "Fix: %lld pages rescued, %lld retired normally\r\n"
              "Memory: %s\r\n"
              "Verdict: %s\r\n%s%s",
              !g_buildOk ? "no" : g_moved ? "yes (not 5.0.16, but the same code at other places)" : "yes", g_fixActive ? "yes" : "no",
              (unsigned long)code, exc_name(code), detail, at, g_crRegs, g_crStack, g_crFiles,
-             (unsigned long)((GetTickCount() - g_t0) / 60000), evs, g_adapterName, g_gpuState, g_gameSettings,
+             (unsigned long)((GetTickCount() - g_t0) / 60000), evs, g_adapterName, g_gpuState, g_gameSettings, g_otherFiles,
              g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
              (long long)g_rescued, (long long)g_retiredNormal, mem, verdict, knownLine, test);
 
@@ -1687,8 +1817,10 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            // Onno, 19 Nov 2026: reports are always welcome, but a test on a clean game tells whether a mod plays a part
            "<p class=\"s\"><b>Every crash log is welcome, also without a test.</b> It helps even more if you also check whether the crash "
            "happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, "
-           "keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too and put &quot;clean&quot; in the "
-           "name you give the upload. Logs of both, with and without mods, from the same PC are especially helpful.</p>"
+           // 2.0.0 (Onno, 20 Nov 2026: "why would they need to put clean in if we can easily tell by the logs. we need this
+           // to work with as little steps as possible for them"): no naming request; the log lists the mods itself
+           "keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too. Logs of both, with and "
+           "without mods, from the same PC are especially helpful; the log shows by itself which mods were there.</p>"
            "<p>Thanks for sending your crash log. It helps find and fix crashes in W3CrashFix.</p>"
            "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The file holds a summary "
            "and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
@@ -1878,10 +2010,10 @@ static DWORD WINAPI init(LPVOID unused) {
     // keep our device reference: it is the game's device and must outlive our hooks anyway
     guard_filter(0);
 
-    game_settings();
+    game_settings(); other_files();
     for (;;) {
         for (int k = 0; k < 15; k++) { Sleep(2000); watch_events(); }
-        summary("30s"); guard_filter(0); game_settings();
+        summary("30s"); guard_filter(0); game_settings(); other_files();
     }
     return 0;
 }
@@ -2146,7 +2278,7 @@ static void write_send_page(void) {
            "<p><b>How it works</b></p><ol>"
            "<li>Click the button. A pCloud page opens, and the log's path is copied. If the page shows a cookie notice, answer it first; it can cover the buttons.</li>"
            "<li>On that page, click <b>Click Here to Add Files</b>. In the window that opens, press Ctrl+V and then Enter.</li>"
-           "<li>Type any name you like. A made-up one is fine. Adding &quot;no crash&quot;, and &quot;clean&quot; if you played without other mods, helps.</li>"
+           "<li>Type any name you like. A made-up one is fine.</li>"
            "<li>Click Upload. When you see &quot;Files are uploaded!&quot;, you are done and can close that tab.</li></ol>"
            "<p class=\"s\">pCloud then offers you an account. You don't need one.</p>"
            // Onno, 20 Nov 2026: "inform the user that accidentally uploading a wrong file is not a big problem"
@@ -2188,6 +2320,7 @@ static void start_work(void) {
         if (g) CloseHandle(g);
     }
     load_report_id();
+    ini_note_settings();
     scan_mods();
     write_send_page();
     guard_filter(1);
