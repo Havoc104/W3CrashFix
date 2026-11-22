@@ -309,7 +309,7 @@ static void other_files(void) {
         if (!pl || pl >= MAX_PATH || mods[i] == self || _wcsnicmp(p, root, rootLen) || p[rootLen] != L'\\') continue;
         char rel[MAX_PATH * 3]; WideCharToMultiByte(CP_UTF8, 0, p + rootLen + 1, -1, rel, sizeof rel, NULL, NULL);
         const char *file = rel; for (const char *c = rel; *c; c++) if (*c == '\\' || *c == '/') file = c + 1;
-        if (game_own(file)) continue;
+        if (game_own(file) || !_strnicmp(rel, "bin\\ddi\\", 8)) continue;   // bin\ddi holds the game's own store file (Steam.dll, by CD PROJEKT RED)
         char ver[48]; mod_version(mods[i], ver, sizeof ver);
         count++;
         if (o < (int)sizeof out - 120) o += snprintf(out + o, sizeof out - o, "%s%s%s%s", count > 1 ? ", " : "", rel, ver[0] ? " " : "", ver);
@@ -712,7 +712,7 @@ static void install_fix(void) {
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "2.1.0-5.0.16"
+#define W3CF_VERSION "2.2.0-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[192] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -850,7 +850,9 @@ static void fmt_stack(const CONTEXT *start) {
                 if (fn < (int)sizeof g_crFiles - 100)
                     fn += snprintf(g_crFiles + fn, sizeof g_crFiles - fn, "%s%s %s", nfiles > 1 ? ", " : "", file, ver[0] ? ver : "(no version)");
                 int windows = wl && pl > wl && !_strnicmp(path, win, wl) && (path[wl] == '\\' || path[wl] == '/');
-                if (m != self && m != (HMODULE)g_base && !windows && !game_own(file) && on < (int)sizeof g_crOthers - 80)
+                int ddi = 0;                                                     // the game's own store file in bin\ddi
+                for (const char *q = path; *q && !ddi; q++) ddi = !_strnicmp(q, "\\bin\\ddi\\", 9);
+                if (m != self && m != (HMODULE)g_base && !windows && !ddi && !game_own(file) && on < (int)sizeof g_crOthers - 80)
                     on += snprintf(g_crOthers + on, sizeof g_crOthers - on, "%s%s", on ? ", " : "", file);
             }
         }
@@ -1010,13 +1012,21 @@ static char g_reportId[48] = "none";
 // their installations"): one more line. Every installation has its own W3CrashFix.ini and so its own random id; the
 // same own text in each shows the reports come from one person. Added to notes written by earlier versions too
 // (right above their "; Allowed:" line), see ini_note_report_id.
-#define G_ID_MULTI "; More than one installation of the game? Use the same text in each, for example MyName_ before each id: your text shows the reports are yours, and the 16 characters tell your installations apart.\r\n"
+// Every note line stays under 80 characters (Onno, 21 Nov 2026, looking at his ini in Notepad: "the lines in the ini
+// are too long without word wrap"). Notes written by earlier versions are replaced, see ini_shorten_notes.
+#define G_ID_MULTI "; More than one installation of the game? Use the same text in each, for\r\n" \
+                   "; example MyName_ before each id: your text shows the reports are yours,\r\n" \
+                   "; and the 16 characters tell your installations apart.\r\n"
 static const char g_idNote[] =
-    "; ReportId: lets the mod's author recognise several crash reports from this machine/installation.\r\n"
-    "; You may personalise it: add your own text before or after the id, for example MyName_0123456789ABCDEF.\r\n"
-    "; Keep the 16 characters of the id itself, then your new crash logs can still be matched with the ones you sent before.\r\n"
+    "; ReportId: lets the mod's author recognise several crash reports from\r\n"
+    "; this machine/installation.\r\n"
+    "; You may personalise it: add your own text before or after the id, for\r\n"
+    "; example MyName_0123456789ABCDEF.\r\n"
+    "; Keep the 16 characters of the id itself, then your new crash logs can\r\n"
+    "; still be matched with the ones you sent before.\r\n"
     G_ID_MULTI
-    "; Allowed: letters, digits, _ and -, 40 characters at most. Anything else is replaced by a new random id.\r\n";
+    "; Allowed: letters, digits, _ and -, 40 characters at most.\r\n"
+    "; Anything else is replaced by a new random id.\r\n";
 // A one-line notice right above the ReportId line when the id the user wrote there could not be used (Onno, 18 Nov
 // 2026: "the user should be notified that their id is invalid ... without revealing the reason"). It names the id
 // that was refused, never the reason. An older notice is removed first; with notice NULL only that happens (used
@@ -1057,6 +1067,39 @@ static void ini_set_id_notice(const char *refused) {
     if (f == INVALID_HANDLE_VALUE) return;
     DWORD w; WriteFile(f, out, (DWORD)o, &w, NULL);
     CloseHandle(f);
+}
+// Notes of earlier versions had lines of 100 to 200 characters. Such a note is taken out here, whole, so that the
+// short-lined one is written in its place right after (ini_note_report_id, ini_note_settings). A note is recognised
+// by its first line: it begins with "; <Setting>: " and is longer than 80 characters; it runs until the next line
+// that is not a comment, which is the setting itself. The line about a refused report id stays. Settings and their
+// values are never touched. Game start only, plain encoding only, like the notes themselves.
+static void ini_shorten_notes(void) {
+    static const char *const starts[] = { "; LicenseAccepted: ", "; GpuCrashDetails: ", "; CrashDump: ", "; OpenReportPage: ", "; ReportId: " };
+    static char buf[16384], out[16384];
+    HANDLE f = CreateFileW(g_ini, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, buf, sizeof buf - 1, &got, NULL);
+    CloseHandle(f);
+    if (!ok || got >= sizeof buf - 1 || (got >= 2 && (unsigned char)buf[0] == 0xFF && (unsigned char)buf[1] == 0xFE)) return;
+    buf[got] = 0;
+    size_t o = 0; int dropped = 0, inNote = 0;
+    for (char *line = buf; *line; ) {
+        char *end = strchr(line, '\n'); size_t len = end ? (size_t)(end - line + 1) : strlen(line);
+        size_t text = len; while (text && (line[text - 1] == '\n' || line[text - 1] == '\r')) text--;
+        if (inNote && line[0] != ';') inNote = 0;                               // the setting's own line ends the note
+        if (!inNote && text > 80)
+            for (size_t k = 0; k < sizeof starts / sizeof starts[0] && !inNote; k++) inNote = !strncmp(line, starts[k], strlen(starts[k]));
+        if (inNote && strncmp(line, g_idNoticePrefix, sizeof g_idNoticePrefix - 1)) { dropped++; line += len; continue; }
+        memcpy(out + o, line, len); o += len;
+        line += len;
+    }
+    if (!dropped) return;
+    f = CreateFileW(g_ini, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w; WriteFile(f, out, (DWORD)o, &w, NULL);
+    CloseHandle(f);
+    logf("settings: %d long note line(s) taken out of W3CrashFix.ini; shorter ones follow", dropped);
 }
 static void ini_note_report_id(void) {
     static char buf[16384];
@@ -1114,18 +1157,23 @@ static void ini_note_report_id(void) {
 static void ini_note_settings(void) {
     static const struct { const char *key, *note; } notes[] = {
         { "LicenseAccepted",
-          "; LicenseAccepted: the license you accepted in the license window. Leave it as it is: without this line the\r\n"
-          "; license window comes back at the next game start, and the fix stays off until you accept.\r\n" },
+          "; LicenseAccepted: the license you accepted in the license window.\r\n"
+          "; Leave it as it is: without this line the license window comes back at\r\n"
+          "; the next game start, and the fix stays off until you accept.\r\n" },
         { "GpuCrashDetails",
-          "; GpuCrashDetails: 1 = after a graphics card crash (\"Gpu Crash for unknown reasons\") the crash log also says which\r\n"
-          "; work the graphics card had not finished. 0 = off (default). It may cost a little frame rate on some PCs.\r\n"
+          "; GpuCrashDetails: 1 = after a graphics card crash (\"Gpu Crash for unknown\r\n"
+          "; reasons\") the crash log also says which work the graphics card had not\r\n"
+          "; finished. 0 = off (default). It may cost a little frame rate on some PCs.\r\n"
           "; Takes effect at the next game start.\r\n" },
         { "CrashDump",
-          "; CrashDump: 1 = a crash also saves a crash dump, W3CrashFix.crash.dmp, next to the crash log. 0 = off (default).\r\n"
-          "; A dump shows much more than the log, but it can contain bits of the game's memory, such as file paths with\r\n"
-          "; your Windows user name. You choose whether to send it. Takes effect at the next game start.\r\n" },
+          "; CrashDump: 1 = a crash also saves a crash dump, W3CrashFix.crash.dmp,\r\n"
+          "; next to the crash log. 0 = off (default).\r\n"
+          "; A dump shows much more than the log, but it can contain bits of the\r\n"
+          "; game's memory, such as file paths with your Windows user name.\r\n"
+          "; You choose whether to send it. Takes effect at the next game start.\r\n" },
         { "OpenReportPage",
-          "; OpenReportPage: 1 = after a crash the report page and a small folder window open (default). 0 = nothing opens.\r\n"
+          "; OpenReportPage: 1 = after a crash the report page and a small folder\r\n"
+          "; window open (default). 0 = nothing opens.\r\n"
           "; The crash log is saved either way.\r\n" },
     };
     static char buf[16384], out[16384 + 2048];
@@ -1801,7 +1849,11 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
                "You don't need it: the button below also copies the file's path. It stays there until the game crashes again.</span></p>");
     put(f, "<p class=\"sb\"><a class=\"b\" target=\"_blank\" rel=\"noopener\" href=\"" W3CF_UPLOAD_URL "\" data-p=\"");
     put(f, dirEsc);
-    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">Send the crash log</a> <span class=\"s\" id=\"c\"></span></p>"
+    // With a crash dump listed under "The files to send", the button says "files" too (noticed on Onno's screenshots of
+    // 21 Nov 2026; Onno: "anything that needs a build must be written"). It still copies only the crash log's path.
+    put(f, W3CF_REPORT_DIR "\\W3CrashFix.crash.log\" onclick=\"cp(this)\">");
+    put(f, g_dumpDone ? "Send the crash files" : "Send the crash log");
+    put(f, "</a> <span class=\"s\" id=\"c\"></span></p>"
            "<p><b>How it works</b></p><ol>"
            "<li>Click the button. A pCloud page opens, and the crash log's path is copied. If the page shows a cookie notice, answer it first; it can cover the buttons.</li>"
            "<li>On that page, click <b>Click Here to Add Files</b>. In the window that opens, press Ctrl+V and then Enter. "
@@ -2319,6 +2371,7 @@ static void start_work(void) {
         HANDLE g = CreateThread(NULL, 0, dump_load, NULL, 0, NULL);
         if (g) CloseHandle(g);
     }
+    ini_shorten_notes();
     load_report_id();
     ini_note_settings();
     scan_mods();

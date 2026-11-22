@@ -47,7 +47,7 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. On the Epic version it may work, but that is not confirmed; see the top of this page.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `2.1.0-5.0.16` is mod version 2.1.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. For example, `2.2.0-5.0.16` is mod version 2.2.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
@@ -55,7 +55,7 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 ### Tested with
 
 - The Witcher 3: Wild Hunt Remastered, Steam version, 5.0.16.41566, DirectX 12.
-- Ryzen 9 9950X3D, 64 GB RAM, RTX 5090 (32 GB), Windows 11, NVIDIA driver 32.0.16.2114.
+- Ryzen 9 9950X3D, 64 GB RAM, RTX 5090 (32 GB), Windows 11, NVIDIA drivers 32.0.16.2114 and 32.0.16.2135.
 - 4K, borderless window, HDR, VSync on, 60 fps limit (applies to the base frame rate).
 - All graphics settings at maximum, path tracing on, NVIDIA HairWorks on.
 - DLSS 5 in Quality mode with Ray Reconstruction and dynamic frame generation, through the RenoDX DLSS add-on by ShortFuse (build 2026-10-16) with ReShade 6.8.0, in DLSS-NR mode, with `nvngx_dlssnr.dll` 310.8.SF. Installed with DLSS5oneclick.
@@ -112,7 +112,7 @@ ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use du
 Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 2.1.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 2.2.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -166,7 +166,7 @@ The mod notices a crash and helps you report it:
 
 - It writes what crashed (file and offset) into its activity log.
 - It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: the date and time of the crash, mod version, a random report id, the in-game mods that were enabled and the other DLL and ASI files that were loaded, whether the fix was active, the crash address with the call stack and the processor's registers, the graphics card with its driver and state, the game's graphics settings, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file. The report page shows the date and time of the crash too; opened again more than an hour later, it says it belongs to an older crash, so an old log isn't mistaken for a new one.
-- It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log**.
+- It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log** (**Send the crash files** when a crash dump was saved too).
 
 **Sending a report.** The button opens an upload page of the author's online storage (pCloud) and copies the crash log's path at the same time. On that page, click **Click Here to Add Files**, press Ctrl+V in the window that opens, and then Enter. Or drag the crash log from the small folder window onto the page; that window asks Windows to keep it on top. Then type any name you like (a made-up one is fine) and click Upload. You don't need an account. Sent the wrong file by mistake? No problem: anything that isn't a W3CrashFix log or crash dump is deleted. You can just send the right file afterwards.
 
@@ -208,6 +208,19 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 ## Changelog
 
 The name after a line says whose idea it was: Havoc's, Claude's, or something a player's log showed.
+
+### 2.2.0-5.0.16
+
+A small release that tidies up what 2.1.0 added. So far thirty crash reports from eighteen players have arrived; thank you to everyone who sent one.
+
+- Crash report and activity log: the list of other DLL and ASI files no longer includes the **game's own files in `bin\ddi`** (such as `Steam.dll`). - Claude
+- `W3CrashFix.ini`: the explanations are **shorter lines** that fit in Notepad without word wrap. The long lines from 2.1.0 are replaced once, at the next game start; your values stay as they are. - Havoc
+- Report page: the button says "Send the crash files" when a crash dump was saved with the log (`CrashDump=1`). - Claude
+- Installer: the file's properties in Windows show the right version (the 2.1.0 installer said 2.0.0.0 there). - Claude
+- The changelogs say whose idea each change was. - Havoc
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** The fix itself is the same, so there is no hurry. If you send crash logs, 2.2.0's list of other files is a little cleaner.
 
 ### 2.1.0-5.0.16
 
@@ -371,7 +384,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, and 1.6.1 to 2.1.0 with Claude Opus 5.5. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, and 2.2.0 with Claude Fable 5.2. Everything was tested over many hours of play before publishing.
 
 **Who did what.** The bug was only found because I let Claude analyse my crash dumps, and the technical explanations in this README were drafted by Claude. Since version 1.0.0, most changes were my ideas and every decision was mine; Claude worked out the details and wrote the code. For example, I wanted the mod to open the crash log after a crash and let players send it to me; showing that in a single browser page was Claude's idea, so a crashing game opens one window instead of several.
 

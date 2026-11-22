@@ -19,6 +19,15 @@ if (-not $Zig) {
 New-Item -ItemType Directory -Force build | Out-Null
 if ($Package -and $CrashTest) { throw 'A crash-test build must never be packaged for release.' }
 
+# The version stands in four places; they must agree (2.1.0 went out with installer.manifest still saying 2.0.0.0).
+$verMod = [regex]::Match((Get-Content src\w3crashfix.c -Raw), '#define W3CF_VERSION "(\d+\.\d+\.\d+)-').Groups[1].Value
+$verIns = [regex]::Match((Get-Content src\installer.c -Raw), '#define W3CF_VERSION\s+L"(\d+\.\d+\.\d+)-').Groups[1].Value
+$verRc  = [regex]::Match((Get-Content src\installer.rc -Raw), 'FILEVERSION (\d+),(\d+),(\d+),').Groups[1..3].Value -join '.'
+$verMan = [regex]::Match((Get-Content src\installer.manifest -Raw), 'name="W3CrashFix\.Installer" version="(\d+\.\d+\.\d+)\.').Groups[1].Value
+if (-not $verMod -or @($verMod, $verIns, $verRc, $verMan | Select-Object -Unique).Count -ne 1) {
+    throw "Version mismatch, nothing was built: w3crashfix.c $verMod, installer.c $verIns, installer.rc $verRc, installer.manifest $verMan"
+}
+
 # Privacy check before a release (Onno, 19 Nov 2026, after the 1.8.0 changelog told readers that an example id had
 # been a real player's: "we need to work together to prevent this type of thing from happening again"). Nothing is
 # built when a published text contains a player's report id, an upload name or another private term. The terms live
@@ -213,6 +222,8 @@ if ($code -eq 0) {
     $sig = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dmp), 0, 4)
     if ($sig -ne 'MDMP') { throw "test_diag: W3CrashFix.crash.dmp is not a minidump (starts with '$sig')" }
     if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('crash dump: written, W3CrashFix.crash.dmp')) { throw 'test_diag: the log does not say the dump was written' }
+    # With a dump listed, the report page's button says "Send the crash files"
+    if (-not (Get-Content "$t\W3CrashFix-report.html" -Raw).Contains('onclick="cp(this)">Send the crash files</a>')) { throw 'test_diag: with a crash dump the report page button does not say "Send the crash files"' }
     "Test passed: crash dump with CrashDump=1 ($([math]::Round((Get-Item $dmp).Length / 1KB)) KB)"
     (Get-Content "$t\W3CrashFix.ini") -replace '^CrashDump=1$', 'CrashDump=0' | Set-Content "$t\W3CrashFix.ini" -Encoding ascii
     Remove-Item $dmp
@@ -243,9 +254,9 @@ if ($code -eq 0) {
         if ($rid -notmatch '^[0-9A-F]{16}$') { throw "test_diag: W3CrashFix.ini does not hold a report id ('$rid')" }
         # The note about personalising the id: only in W3CrashFix.ini, once, right above the ReportId line.
         $iniText = Get-Content "$t\W3CrashFix.ini" -Raw
-        if (([regex]::Matches($iniText, '; ReportId: ')).Count -ne 1 -or $iniText -notmatch '(?s); Allowed: [^\r\n]*\r?\nReportId=') { throw 'test_diag: W3CrashFix.ini lacks the note above the ReportId line (or has it twice)' }
+        if (([regex]::Matches($iniText, '; ReportId: ')).Count -ne 1 -or $iniText -notmatch '; Allowed: [^\r\n]*\r?\n; Anything else is replaced by a new random id\.\r?\nReportId=') { throw 'test_diag: W3CrashFix.ini lacks the note above the ReportId line (or has it twice)' }
         # 2.0.0: the line about several installations, exactly once, right above "; Allowed:"
-        if (([regex]::Matches($iniText, '; More than one installation of the game\?')).Count -ne 1 -or $iniText -notmatch '; More than one installation[^\r\n]*\r?\n; Allowed: ') { throw 'test_diag: W3CrashFix.ini lacks the line about several installations above "; Allowed:" (or has it twice)' }
+        if (([regex]::Matches($iniText, '; More than one installation of the game\?')).Count -ne 1 -or $iniText -notmatch '(?s); More than one installation.{0,220}?tell your installations apart\.\r?\n; Allowed: ') { throw 'test_diag: W3CrashFix.ini lacks the line about several installations above "; Allowed:" (or has it twice)' }
     }
     if (-not $cl.Contains("Report id: $rid")) { throw 'test_diag: the crash summary does not show the report id from W3CrashFix.ini' }
     # 2.1.0: every setting has its explanation, exactly once (also after several game starts), right above its line.
@@ -253,6 +264,9 @@ if ($code -eq 0) {
     foreach ($s in @(@('GpuCrashDetails', 'Takes effect at the next game start\.'), @('CrashDump', 'Takes effect at the next game start\.'), @('OpenReportPage', 'The crash log is saved either way\.'))) {
         if (([regex]::Matches($iniAll, "; $($s[0]): ")).Count -ne 1 -or $iniAll -notmatch "$($s[1])\r?\n$($s[0])=") { throw "test_diag: W3CrashFix.ini lacks the explanation above $($s[0])= (or has it twice)" }
     }
+    # No line of the settings file is longer than 80 characters (it must read well in Notepad without word wrap).
+    $long = @(($iniAll -split "`r?`n") | Where-Object { $_.Length -gt 80 })
+    if ($long.Count) { throw "test_diag: W3CrashFix.ini has line(s) longer than 80 characters: $($long[0])" }
     if ($iniAll -match '(?m)^LicenseAccepted=' -and ([regex]::Matches($iniAll, '; LicenseAccepted: ')).Count -ne 1) { throw 'test_diag: W3CrashFix.ini lacks the explanation above LicenseAccepted= (or has it twice)' }
     # The report page: one button, to the upload page; the folder link; nothing left of the two old buttons.
     foreach ($need in 'Send the crash log', 'u.pcloud.com/#/puplink?code=', 'A small folder window has opened in the lower right corner that holds only this file', "Copy the file's path", 'W3CrashFix crash report\W3CrashFix.crash.log" onclick="cp(this)"', 'Files are uploaded!', 'Why use my browser?', 'The mod itself never connects to the internet') {
