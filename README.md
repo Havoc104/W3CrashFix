@@ -8,7 +8,7 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 **Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it is not confirmed: an older version of the mod turned itself off there. Since 1.8.0 the mod also finds the game's code when it sits at a different place, so it may work now. Any other store version is untested.
 
-**Playing on Epic? Your log can settle it.** Start the game once with the mod installed, then quit. Open `W3CrashFix-send-log.html` (next to the mod, in `bin\x64_dx12`) and click the send button. The log shows whether the fix switched on, also if your game never crashes. Nothing is sent unless you click the button.
+**Playing on Epic? Your log can settle it.** Start the game once with the latest version of the mod installed, then quit. Open `W3CrashFix-send-log.html` (next to the mod, in `bin\x64_dx12`) and click the send button. The log shows whether the fix switched on, also if your game never crashes. Nothing is sent unless you click the button.
 
 | Bug | Symptom |
 |---|---|
@@ -47,10 +47,10 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. On the Epic version it may work, but that is not confirmed; see the top of this page.
 
-**Version numbers** have the form `<mod version>-<game version>`. For example, `2.2.0-5.0.16` is mod version 2.2.0 for game patch 5.0.16. A release for a newer game patch will have a different game part.
+**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `2.2.0-5.0.16` is mod version 2.2.0, tested with game version 5.0.16. Older or newer game versions may work too, because the mod looks for the code it needs and switches the fix on only when it finds it (see below).
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
-**Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise.
+**Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise. A player's crash log has shown this at work: on game version 5.0.15.65482 the mod found the code at other places and the fix switched itself on.
 
 ### Tested with
 
