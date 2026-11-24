@@ -8,7 +8,17 @@ It patches a bug in the game's code, in memory only, while the game runs. No gam
 
 **Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it is not confirmed: an older version of the mod turned itself off there. Since 1.8.0 the mod also finds the game's code when it sits at a different place, so it may work now. Any other store version is untested.
 
-**Playing on Epic? Your log can settle it.** Start the game once with the latest version of the mod installed, then quit. Open `W3CrashFix-send-log.html` (next to the mod, in `bin\x64_dx12`) and click the send button. The log shows whether the fix switched on, also if your game never crashes. Nothing is sent unless you click the button.
+### Epic players: we need you!
+
+One log from you can settle whether W3CrashFix works on the Epic version. Epic is the only store we haven't had a log from yet. There's reason to be hopeful: since 1.8.0 the mod also finds the game's code when it sits at other places, and a player's crash log has already shown the fix switching itself on in game version 5.0.15.65482.
+
+It takes two minutes, and your game doesn't need to crash:
+
+1. Install the latest version of W3CrashFix, start the game, load a save, then quit.
+2. Open `W3CrashFix-send-log.html` (next to the mod, in `bin\x64_dx12`) and click the send button.
+3. Type your Nexus name, or any name, as the upload name.
+
+The log shows whether the fix switched on. Nothing is sent unless you click the button.
 
 | Bug | Symptom |
 |---|---|
@@ -45,7 +55,7 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 
 ## Requirements
 
-- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (`witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. On the Epic version it may work, but that is not confirmed; see the top of this page.
+- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (tested; `witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. Other game versions may work too: a player's crash log showed the fix active on **5.0.15.65482**. **Epic version: not confirmed yet. Please send a log** (see [Epic players: we need you!](#epic-players-we-need-you)).
 
 **Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `2.2.0-5.0.16` is mod version 2.2.0, tested with game version 5.0.16. Older or newer game versions may work too, because the mod looks for the code it needs and switches the fix on only when it finds it (see below).
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
