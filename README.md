@@ -2,6 +2,16 @@
 
 Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**) on PC.
 
+### Game patch 5.02 (26 November 2026): the game now fixes this crash itself
+
+Patch 5.02 for The Witcher 3: Wild Hunt Remastered changes the very code that W3CrashFix repairs. We read the new code: the game now reuses an idle descriptor page instead of losing it, which is what this mod's fix does. CD PROJEKT RED's patch notes don't mention it. This comes from reading the game's code, and we have not confirmed it in a long play session.
+
+What that means for you:
+
+- **On 5.02** you no longer need W3CrashFix for the descriptor heap crash. If you keep it installed, its fix switches itself off, because it never changes code it doesn't recognise, and it keeps working as a crash reporter. Its log says "FIX DISABLED" and "this build of the game is not supported yet". For 5.02 that message is out of date and you can ignore it.
+- **On 5.01c or older** (the mod calls that game version 5.0.16) nothing changes: the fix works as before.
+- **Crash reports are still welcome**, from 5.02 too. The two known issues below are other crashes, and the patch notes don't mention them.
+
 It patches a bug in the game's code, in memory only, while the game runs. No game files are changed.
 
 **Also a diagnostic tool for the game's other crashes.** Whatever crashes the game, W3CrashFix saves a crash report on your PC: where the game crashed and how it got there, which files were involved and their versions, which mods and add-ons were loaded, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). If you send it in, it helps find the causes of those crashes too, and the ones found so far are recognised on the report page with tips. Nothing is ever sent by the mod itself.
