@@ -42,7 +42,7 @@ The log shows whether the fix switched on. Nothing is sent unless you click the 
 
 ### Known issue: "Gpu Crash for unknown reasons"
 
-We know about this crash and we're working to track it down. It is a different crash from the one W3CrashFix fixes: the game stops itself with "Gpu Crash for unknown reasons" (at `witcher3.exe+0x1F103A3`). Thanks to the crash logs you sent, we know it happens inside the game's DX12 renderer when the graphics card drops out, also on a game without any mods. Six players have reported it so far, three of them on graphics cards with 6 GB of memory. The cause is not known, and W3CrashFix can't prevent this crash. W3CrashFix is highly unlikely to cause it: where a report had a call stack, W3CrashFix's own code wasn't in it, and in every report its fix had done little or nothing in that session (0 to 2 pages rescued in the whole session).
+We know about this crash and we're working to track it down. It is a different crash from the one W3CrashFix fixes: the game stops itself with "Gpu Crash for unknown reasons" (at `witcher3.exe+0x1F103A3`). Thanks to the crash logs you sent, we know it happens inside the game's DX12 renderer when the graphics card drops out, also on a game without any mods. Eight players have reported it so far, four of them on graphics cards with 6 GB of memory. The cause is not known, and W3CrashFix can't prevent this crash. W3CrashFix is highly unlikely to cause it: where a report had a call stack, W3CrashFix's own code wasn't in it, and in every report its fix had done little or nothing in that session (0 to 2 pages rescued in the whole session).
 
 Things that may help:
 - Update your graphics driver.
