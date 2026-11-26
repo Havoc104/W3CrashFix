@@ -195,7 +195,8 @@ if ($code -eq 0) {
     # and the visible GpuCrashDetails=0 default in W3CrashFix.ini.
     if ($cl -notmatch 'GPU state: [^\r\n]+') { throw 'test_diag: the crash summary has no "GPU state:" line' }
     if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('[CRASH] GPU state: ')) { throw 'test_diag: the activity log lacks the GPU state line' }
-    if ((IniVal "$t\W3CrashFix.ini" 'GpuCrashDetails') -ne '0') { throw 'test_diag: W3CrashFix.ini does not show GpuCrashDetails=0' }
+    if ((IniVal "$t\W3CrashFix.ini" 'GpuCrashDetails') -ne '1') { throw 'test_diag: W3CrashFix.ini does not show GpuCrashDetails=1 (on by default since 2.3.0)' }
+    if ((IniVal "$t\W3CrashFix.ini" 'DefaultsSet') -ne '2') { throw 'test_diag: W3CrashFix.ini does not show DefaultsSet=2' }
     # 1.6.2: the call stack. It starts at the crash address and names at least one caller in the stand-in game.
     $csLine = ($cl -split "`r?`n" | Where-Object { $_ -like 'Call stack: *' } | Select-Object -First 1)
     $crAt = [regex]::Match($cl, 'Crash: exception [^\r\n]* at (witcher3\.exe\+0x[0-9A-F]+)').Groups[1].Value
@@ -481,7 +482,7 @@ if (Select-String -Path build\W3CrashFix.asi, build\dinput8.dll -Pattern 'licens
 foreach ($f in 'build\W3CrashFix.asi', 'build\dinput8.dll') {
     if (-not (Select-String -Path $f -Pattern 'license: asking the user' -Encoding ascii -Quiet)) { throw "The license dialog is missing from $f." }
 }
-if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7 / F8 / F9 crash the game). Do not release it.' }
+if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7 to F12 crash the game). Do not release it.' }
 
 if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value

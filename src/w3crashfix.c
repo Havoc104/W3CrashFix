@@ -478,7 +478,7 @@ static volatile LONG g_fixActive;                    // detour installed AND the
 // Built without it, g_accepted is always 1 and the mod starts working right away.
 static volatile LONG g_accepted = 1;                 // the user accepted the license (now or in an earlier session)
 #ifdef W3_CRASHTEST
-static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash, 4 = GPU device removed (F9)
+static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash, 4 = GPU device removed (F9), 5 / 6 = known renderer crash (F10 / F11)
 #endif
 typedef void (*Invalidate_t)(unsigned char *alloc, void *page);
 typedef void *(*CreatePage_t)(unsigned char *alloc);
@@ -712,7 +712,7 @@ static void install_fix(void) {
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 // <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "2.2.0-5.0.16"
+#define W3CF_VERSION "2.3.0-5.0.16"
 static const char *g_flavor = "";
 static char g_adapterName[192] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -874,8 +874,10 @@ static void fmt_stack(const CONTEXT *start) {
 //   LicenseAccepted=MIT-2      the license text the user accepted (W3CF_LICENSE_ID); written by the mod or the installer
 //   ReportId=0123456789ABCDEF  the random report id (see below)
 //   OpenReportPage=1           0 = after a crash only the crash log is saved; no page and no folder window open
-//   GpuCrashDetails=0          1 = switch on D3D12's DRED, so a GPU crash report says which GPU work was unfinished
-//                              (since 2.0.0; off by default; no measurable frame-rate cost in Onno's test; see "GPU state")
+//   GpuCrashDetails=1          1 = switch on D3D12's DRED, so a GPU crash report says which GPU work was unfinished
+//                              (since 2.0.0; on by default since 2.3.0; no measurable frame-rate
+//                              cost in Onno's test; see "GPU state")
+//   DefaultsSet=2              which defaults this file has been given (see load_settings); not a setting for users
 //   CrashDump=0                1 = a crash also writes W3CrashFix.crash.dmp, a Windows minidump (since 2.0.0; off by
 //                              default because it can hold bits of the game's memory; see "crash dump")
 // Files of earlier versions are taken over once and then removed, so nobody is asked again because of this change:
@@ -925,7 +927,20 @@ static void load_settings(void) {
     }
     ini_get(L"OpenReportPage", v, sizeof v);
     g_openPage = strcmp(v, "0") != 0;
+    // GpuCrashDetails is ON by default since 2.3.0 (Onno, 26 Nov 2026: "yes switch it on"; all six GPU
+    // crash reports so far came without the details). Earlier versions wrote "GpuCrashDetails=0" into the file themselves
+    // as the visible default, so a 0 there is not the user's choice: it is switched on once, and DefaultsSet=2 records
+    // that this was done. A 0 the user sets after that stays.
+    ini_get(L"DefaultsSet", cur, sizeof cur);
     ini_get(L"GpuCrashDetails", v, sizeof v);
+    if (atoi(cur) < 2) {
+        if (strcmp(v, "1")) {
+            int was0 = !strcmp(v, "0");
+            ini_set(L"GpuCrashDetails", "1"); lstrcpyA(v, "1");
+            if (was0) logf("settings: GpuCrashDetails is on by default from this version and was switched on once (set it to 0 in W3CrashFix.ini to switch it off)");
+        }
+        ini_set(L"DefaultsSet", "2");
+    }
     g_dredWanted = strcmp(v, "1") == 0;
     ini_get(L"CrashDump", v, sizeof v);
     g_dumpWanted = strcmp(v, "1") == 0;
@@ -1090,6 +1105,9 @@ static void ini_shorten_notes(void) {
         if (inNote && line[0] != ';') inNote = 0;                               // the setting's own line ends the note
         if (!inNote && text > 80)
             for (size_t k = 0; k < sizeof starts / sizeof starts[0] && !inNote; k++) inNote = !strncmp(line, starts[k], strlen(starts[k]));
+        // 2.3.0: the GpuCrashDetails note of 2.1.0 to 2.2.0 says "0 = off (default)"; the setting is on by default now.
+        // That note began with "; GpuCrashDetails: 1 = "; it is taken out the same way, and the new one follows.
+        if (!inNote && !strncmp(line, "; GpuCrashDetails: 1 = ", 23)) inNote = 1;
         if (inNote && strncmp(line, g_idNoticePrefix, sizeof g_idNoticePrefix - 1)) { dropped++; line += len; continue; }
         memcpy(out + o, line, len); o += len;
         line += len;
@@ -1099,7 +1117,7 @@ static void ini_shorten_notes(void) {
     if (f == INVALID_HANDLE_VALUE) return;
     DWORD w; WriteFile(f, out, (DWORD)o, &w, NULL);
     CloseHandle(f);
-    logf("settings: %d long note line(s) taken out of W3CrashFix.ini; shorter ones follow", dropped);
+    logf("settings: %d note line(s) of an earlier version taken out of W3CrashFix.ini; the current ones follow", dropped);
 }
 static void ini_note_report_id(void) {
     static char buf[16384];
@@ -1161,9 +1179,10 @@ static void ini_note_settings(void) {
           "; Leave it as it is: without this line the license window comes back at\r\n"
           "; the next game start, and the fix stays off until you accept.\r\n" },
         { "GpuCrashDetails",
-          "; GpuCrashDetails: 1 = after a graphics card crash (\"Gpu Crash for unknown\r\n"
+          "; GpuCrashDetails: after a graphics card crash (\"Gpu Crash for unknown\r\n"
           "; reasons\") the crash log also says which work the graphics card had not\r\n"
-          "; finished. 0 = off (default). It may cost a little frame rate on some PCs.\r\n"
+          "; finished. 1 = on (default), 0 = off. It may cost a little frame rate on\r\n"
+          "; some PCs; none was measurable on the author's.\r\n"
           "; Takes effect at the next game start.\r\n" },
         { "CrashDump",
           "; CrashDump: 1 = a crash also saves a crash dump, W3CrashFix.crash.dmp,\r\n"
@@ -1565,9 +1584,18 @@ static void crash_dump(EXCEPTION_POINTERS *ep, const wchar_t *dir) {
 
 // Switched on from a thread of its own at game start, before the game creates its device (LoadLibrary must not run
 // inside DllMain). If the device already exists, it only takes effect at the next start, and the log says so.
-static DWORD WINAPI dred_switch_on(LPVOID unused) {
-    (void)unused;
-    if (GetModuleHandleW(L"D3D12Core.dll")) { logf("gpu details: GpuCrashDetails=1, but the game's graphics device already exists; it takes effect at the next start"); return 0; }
+// The first session after an install (Onno, 26 Nov 2026, after the first start of 2.3.0 on a clean install logged "it
+// takes effect at the next start"; "yeah worth it"): the license window is open while the game starts, and by the time
+// the user accepts, D3D12Core.dll is loaded, so the check below gave up. But the game is still held before its window
+// then (hold_game), and its real device comes after the window (the hooks see it about 2 s after the game continues).
+// So right after "accepted", while the game is still held, DRED is switched on without that check (held = 1). Nothing
+// is done before the user accepts. Whether it took effect when D3D12 was already loaded shows in a GPU crash report.
+static int g_dredTried;
+static DWORD WINAPI dred_switch_on(LPVOID held) {
+    if (g_dredTried) return 0;                           // start_work asks again after the license path did it
+    g_dredTried = 1;
+    int loaded = GetModuleHandleW(L"D3D12Core.dll") != NULL;
+    if (loaded && !held) { logf("gpu details: GpuCrashDetails=1, but the game's graphics device already exists; it takes effect at the next start"); return 0; }
     HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
     typedef HRESULT (WINAPI *GDI_t)(REFIID, void **);
     GDI_t gdi = d3d12 ? (GDI_t)GetProcAddress(d3d12, "D3D12GetDebugInterface") : NULL;
@@ -1580,7 +1608,8 @@ static DWORD WINAPI dred_switch_on(LPVOID unused) {
     ID3D12DeviceRemovedExtendedDataSettings_SetPageFaultEnablement(s, D3D12_DRED_ENABLEMENT_FORCED_ON);
     ID3D12DeviceRemovedExtendedDataSettings_Release(s);
     g_dredOn = 1;
-    logf("gpu details: DRED switched on (GpuCrashDetails=1): a GPU crash report will name the unfinished GPU work and any page fault");
+    if (held && loaded) logf("gpu details: DRED switched on (GpuCrashDetails=1) right after the license was accepted, before the game made its window; the game had already loaded D3D12, so a GPU crash report will show whether the details are there");
+    else logf("gpu details: DRED switched on (GpuCrashDetails=1): a GPU crash report will name the unfinished GPU work and any page fault");
     return 0;
 }
 
@@ -1680,24 +1709,38 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
     // Since test48 (Onno's test of 20 Nov 2026, "all 4"): the tips are a list of their own, shown on the report page as a
     // separate block below the summary instead of one long paragraph in it; the GPU tip says whether GpuCrashDetails is
     // already on; and no "yet" in "the cause is not known" (no promises in public texts).
-    static const struct { unsigned rva; int gpu; const char *what; const char *tips[4]; } known_crashes[] = {
+    // Onno, 26 Nov 2026 ("yes", after the analysis of the +0x1EECxxx crashes of three players): an entry can also ask for
+    // a crash dump (kind 2). Those crashes are the game's renderer binding draw state to a command-list context that is
+    // gone (+0x1EECD86: set index buffer, the sub-list pointer was garbage; +0x1EECF31: the neighbour, called with a
+    // null handle); the log cannot show what the memory was reused for, a dump can. Such an entry has no tips, so the
+    // "Things that may help:" heading is left out for it.
+    static const char renderListCrash[] =
+        "The game crashed while preparing a draw call: its renderer used a drawing list that was no longer valid. "
+        "Seen in reports from several players, with and without mods. The cause is not known.";
+    static const struct { unsigned rva; int kind; const char *what; const char *tips[4]; } known_crashes[] = {   // kind 1 = GPU crash, 2 = a dump would help
         { 0x1F103A3, 1,
           "The graphics card dropped out, and the game stopped itself with \"Gpu Crash for unknown reasons\". "
           "Seen in reports from several players, half of them on graphics cards with 6 GB of memory. The cause is not known.",
           { "Update the graphics driver.", "Remove any overclock or undervolt of the graphics card.",
             "On a card with 8 GB of memory or less, lower texture quality and ray tracing.", NULL } },
+        { 0x1EECD86, 2, renderListCrash, { NULL } },
+        { 0x1EECF31, 2, renderListCrash, { NULL } },
     };
     int ki = -1;
     for (size_t k = 0; g_buildOk && !g_moved && rva >= 0 && k < sizeof known_crashes / sizeof known_crashes[0]; k++)
         if ((long long)known_crashes[k].rva == rva) ki = (int)k;
-    const char *gpuTip = ki < 0 || !known_crashes[ki].gpu ? NULL
+    const char *gpuTip = ki < 0 ? NULL
+        : known_crashes[ki].kind == 2 ? (g_dumpWanted && g_mdwd
+            ? "CrashDump is on, so a crash dump is saved next to this log. Please send both files: the dump shows what the log cannot."
+            : "To help find the cause, set CrashDump=1 in W3CrashFix.ini and send the log and the crash dump of the next crash: the dump shows what the log cannot.")
+        : known_crashes[ki].kind != 1 ? NULL
         : g_dredOn ? "GpuCrashDetails is on, so this crash log already holds the extra GPU details (see \"GPU state\")."
         : g_dredWanted ? "GpuCrashDetails=1 is set, but it could not take effect in this session (see the activity log); it works from the next game start."
         : "To help find the cause, set GpuCrashDetails=1 in W3CrashFix.ini and send the log of the next crash: it then says more.";
     static char knownLine[1024];
     knownLine[0] = 0;
     if (ki >= 0) {
-        int n = snprintf(knownLine, sizeof knownLine, "Known crash: %s Things that may help:", known_crashes[ki].what);
+        int n = snprintf(knownLine, sizeof knownLine, "Known crash: %s%s", known_crashes[ki].what, known_crashes[ki].tips[0] ? " Things that may help:" : "");
         for (int t = 0; t < 4 && known_crashes[ki].tips[t] && n < (int)sizeof knownLine - 160; t++)
             n += snprintf(knownLine + n, sizeof knownLine - n, " %s", known_crashes[ki].tips[t]);
         if (gpuTip && n < (int)sizeof knownLine - 160) n += snprintf(knownLine + n, sizeof knownLine - n, " %s", gpuTip);
@@ -1826,9 +1869,11 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
         char e[1024];
         put(f, "</pre><div class=\"k\"><b>This crash is known.</b> ");
         html_esc(known_crashes[ki].what, e, sizeof e); put(f, e);
-        put(f, "<br>Things that may help:<ul>");
-        for (int t = 0; t < 4 && known_crashes[ki].tips[t]; t++) { put(f, "<li>"); html_esc(known_crashes[ki].tips[t], e, sizeof e); put(f, e); put(f, "</li>"); }
-        put(f, "</ul>");
+        if (known_crashes[ki].tips[0]) {
+            put(f, "<br>Things that may help:<ul>");
+            for (int t = 0; t < 4 && known_crashes[ki].tips[t]; t++) { put(f, "<li>"); html_esc(known_crashes[ki].tips[t], e, sizeof e); put(f, e); put(f, "</li>"); }
+            put(f, "</ul>");
+        } else put(f, "<br>");
         if (gpuTip) { html_esc(gpuTip, e, sizeof e); put(f, e); }
         put(f, "</div><pre hidden>");   // keeps the "</pre>" below balanced
     }
@@ -1955,7 +2000,9 @@ static void guard_filter(int quiet) {
 #ifdef W3_CRASHTEST
 // TEST BUILDS ONLY - never part of a release. Three key combinations crash the game on purpose, while the game window
 // is in front:  Ctrl+Alt+Shift+F7 = plain crash inside the mod,  Ctrl+Alt+Shift+F8 = the real descriptor heap crash,
-// Ctrl+Alt+Shift+F9 = the GPU crash (the game's graphics device removed, see below).
+// Ctrl+Alt+Shift+F9 = the GPU crash (the game's graphics device removed, see below),  Ctrl+Alt+Shift+F10 / F11 = the
+// two known renderer crashes at witcher3.exe+0x1EECD86 / +0x1EECF31,  Ctrl+Alt+Shift+F12 = a call through an empty
+// function pointer (see below).
 static DWORD WINAPI crash_keys(LPVOID unused) {
     (void)unused;
     for (;;) {
@@ -1990,6 +2037,54 @@ static DWORD WINAPI crash_keys(LPVOID unused) {
             ID3D12Device5_Release(d5);
             for (int s = 0; s < 20; s++) Sleep(1000);
             logf("TEST: 20 s after the device removal the game has not crashed (it may hang): end it in Task Manager if needed");
+        }
+        // F10 and F11 (since test58, Onno, 26 Nov 2026: "can you simulate those crashes too?" - "yes, do it"): the two
+        // known renderer crashes of the +0x1EECxxx family, at the players' exact addresses, by calling the game's own
+        // two functions with the bad input the players' reports showed. Only on the game build the addresses come
+        // from (5.0.16, code not moved), and only when the functions' first bytes are the expected ones. The call
+        // comes from this thread, so the call stack names W3CrashFix as the caller; the report's test note says why.
+        //   F10: +0x1EECD30 ("set index buffer") with a stand-in renderer object whose context 1 has one sub-list,
+        //        and that sub-list pointer is garbage (the value from a player's report): faults at +0x1EECD86.
+        //   F11: +0x1EECF10 with context handle 0 (the function only refuses -1) and an object address that makes
+        //        the read non-canonical, so it faults at +0x1EECF31 whatever is mapped in this process.
+        int f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0, f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+        if ((f10 || f11) && InterlockedCompareExchange(&g_testCrash, f10 ? 5 : 6, 0) == 0) {
+            static const unsigned char sigD30[] = { 0x48, 0x83, 0xEC, 0x38, 0x41, 0x8B, 0xC1, 0x83, 0xFA, 0xFF };
+            static const unsigned char sigF10[] = { 0x45, 0x8B, 0xD0, 0x45, 0x8B, 0xD9, 0x83, 0xFA, 0xFF };
+            unsigned char *fn = g_base ? g_base + (f10 ? 0x1EECD30 : 0x1EECF10) : NULL;
+            int ok = g_buildOk && !g_moved && fn;
+            if (ok) ok = !memcmp(fn, f10 ? sigD30 : sigF10, f10 ? sizeof sigD30 : sizeof sigF10);   // readable: the build was recognised
+            if (!ok) {
+                logf("TEST: Ctrl+Alt+Shift+%s - known renderer crash requested, but this is not the game build its addresses come from; nothing done", f10 ? "F10" : "F11");
+                g_testCrash = 0;
+                Sleep(1000);
+                continue;
+            }
+            if (f10) {
+                const size_t ctx = (size_t)0x1345 * 0x1C0;            // context 1 inside the renderer object
+                unsigned char *obj = VirtualAlloc(NULL, ctx + 0x1C0 + 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                if (!obj) { logf("TEST: Ctrl+Alt+Shift+F10 - no memory for the stand-in object; nothing done"); g_testCrash = 0; continue; }
+                unsigned long long *lists = (unsigned long long *)(obj + ctx + 0x1C0);
+                lists[0] = 0xF988000000020000ull;                     // the garbage "sub-list pointer"
+                *(unsigned *)(obj + ctx + 0x100) = 1;                 // one sub-list
+                *(unsigned long long **)(obj + ctx + 0x68) = lists;
+                logf("TEST: Ctrl+Alt+Shift+F10 - known renderer crash: the game's index buffer bind (witcher3.exe+0x1EECD30) with a garbage sub-list pointer");
+                ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned))fn)(obj, 1, 0, 1, 0, 1, 4);
+            } else {
+                logf("TEST: Ctrl+Alt+Shift+F11 - known renderer crash: the game's bind at witcher3.exe+0x1EECF10 with context handle 0");
+                ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, void *))fn)((void *)0x8000000000000000ull, 0, 0, 0, 0, NULL);
+            }
+            logf("TEST: the game's function returned without a crash; nothing else done");
+            g_testCrash = 0;
+            Sleep(1000);
+        }
+        // F12 (since the test build after test58): a call through an empty function pointer, the kind of crash one
+        // player's report showed (crash address 0). The call stack must then start with "0x0 (an empty address ...)"
+        // and go on with the caller taken from the top of the stack (here this function), instead of "not available".
+        if ((GetAsyncKeyState(VK_F12) & 0x8000) && InterlockedCompareExchange(&g_testCrash, 7, 0) == 0) {
+            logf("TEST: Ctrl+Alt+Shift+F12 - a call through an empty function pointer (crash address 0)");
+            void (*volatile nothing)(void) = NULL;
+            nothing();
         }
     }
     return 0;
@@ -2260,6 +2355,7 @@ static DWORD WINAPI license_thread(LPVOID unused) {
             g_fixActive = 1;
             logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", g_at[F_ENSURE]);
         }
+        if (g_dredWanted && g_cwSlot) dred_switch_on((LPVOID)1);    // the game is still held before its window: see dred_switch_on
         start_work();
     } else if (r == 3) {
         wchar_t to[MAX_PATH]; lstrcpyW(to, g_dir); lstrcatW(to, L"W3CrashFix.removed");
@@ -2360,7 +2456,7 @@ static void start_work(void) {
     char opv[8]; ini_get(L"OpenReportPage", opv, sizeof opv);
     if (!opv[0]) ini_set(L"OpenReportPage", "1");        // make the setting visible to anyone who opens the file
     char gcd[8]; ini_get(L"GpuCrashDetails", gcd, sizeof gcd);
-    if (!gcd[0]) ini_set(L"GpuCrashDetails", "0");       // the same, for the GPU details (off by default, see "GPU state")
+    if (!gcd[0]) ini_set(L"GpuCrashDetails", "1");       // the same, for the GPU details (on by default, see load_settings)
     if (g_dredWanted) {                                  // before the game creates its graphics device; init waits for that
         HANDLE g = CreateThread(NULL, 0, dred_switch_on, NULL, 0, NULL);
         if (g) CloseHandle(g);

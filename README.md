@@ -43,6 +43,12 @@ If you get this crash, please send your crash log with the button on the report 
 
 If the cause turns out to be the graphics driver or the graphics card itself, a mod can't fix it. Then the logs can still show what triggers it, so it can be avoided or reported to the right people.
 
+### Known issue: a crash while the game prepares a draw call
+
+Three players have reported a crash at `witcher3.exe+0x1EECD86` or `witcher3.exe+0x1EECF31`. It is a different crash from the one W3CrashFix fixes: the game's renderer uses a drawing list that is no longer valid. It also happens on a game without in-game mods and without a script extender. The cause is not known, and W3CrashFix can't prevent this crash. No report showed a sign that W3CrashFix caused it.
+
+The report page recognises this crash. If you get it, please set `CrashDump=1` in `W3CrashFix.ini` and send the crash log and the crash dump of the next crash: the dump shows what the log cannot. See [Settings](#settings).
+
 ### What W3CrashFix can't fix
 
 W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your crash logs help to understand other crashes too, but many of those are out of reach for a mod like this:
@@ -57,7 +63,7 @@ W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your cras
 
 - The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (tested; `witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. Other game versions may work too: a player's crash log showed the fix active on **5.0.15.65482**. **Epic version: not confirmed yet. Please send a log** (see [Epic players: we need you!](#epic-players-we-need-you)).
 
-**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `2.2.0-5.0.16` is mod version 2.2.0, tested with game version 5.0.16. Older or newer game versions may work too, because the mod looks for the code it needs and switches the fix on only when it finds it (see below).
+**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `2.3.0-5.0.16` is mod version 2.3.0, tested with game version 5.0.16. Older or newer game versions may work too, because the mod looks for the code it needs and switches the fix on only when it finds it (see below).
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
 
 **Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise. A player's crash log has shown this at work: on game version 5.0.15.65482 the mod found the code at other places and the fix switched itself on.
@@ -122,7 +128,7 @@ ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use du
 Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 2.2.0-5.0.16 (...) loaded, pid ... ====
+==== W3CrashFix 2.3.0-5.0.16 (...) loaded, pid ... ====
 fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
 hooks installed: yes (...)
 ```
@@ -138,14 +144,16 @@ The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini
 LicenseAccepted=MIT-2
 ReportId=0123456789ABCDEF
 OpenReportPage=1
-GpuCrashDetails=0
+GpuCrashDetails=1
 CrashDump=0
+DefaultsSet=2
 ```
 
 - `LicenseAccepted`: the license text you accepted. See [The license window](#the-license-window).
 - `ReportId`: a random number, used only in crash reports. See [If the game crashes](#if-the-game-crashes).
 - `OpenReportPage`: set it to `0` if nothing should open after a crash. The crash log is still saved.
-- `GpuCrashDetails`: set it to `1` if your game crashes with "Gpu Crash for unknown reasons". The crash log then also says which work your graphics card had not finished, and where on the card a bad memory access happened, if any. In a test on the author's PC it had no measurable effect on the frame rate; on other PCs it may cost a little. It is off by default. It takes effect at the next game start. Every crash log says whether the graphics card was still working and, if not, why Windows stopped it, also with this setting off.
+- `GpuCrashDetails`: when the game crashes with "Gpu Crash for unknown reasons", the crash log also says which work your graphics card had not finished, and where on the card a bad memory access happened, if any. It is on by default; set it to `0` to switch it off. In a test on the author's PC it had no measurable effect on the frame rate; on other PCs it may cost a little. A change takes effect at the next game start. Every crash log says whether the graphics card was still working and, if not, why Windows stopped it, also with this setting off.
+- `DefaultsSet`: written by the mod to remember which default settings your file has already been given. Leave it as it is.
 - `CrashDump`: set it to `1` to also save a crash dump, `W3CrashFix.crash.dmp`, next to the crash log. A dump shows what the game was working on when it crashed, much more than the log can; the leak this mod fixes was found in dumps. It can contain bits of the game's memory, such as file paths with your Windows user name, so it is off by default and you choose whether to send it. Expect a few MB up to a few tens of MB.
 
 ### The license window
@@ -218,6 +226,21 @@ About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second
 ## Changelog
 
 The name after a line says whose idea it was: Havoc's, Claude's, or something a player's log showed.
+
+### 2.3.0-5.0.16
+
+Crash reports now say more without you switching anything on. So far forty-one crash reports from twenty-six players have arrived; thank you to everyone who sent one.
+
+- Setting **`GpuCrashDetails` is on by default**. A report of the "Gpu Crash for unknown reasons" crash now also names the work the graphics card had not finished. A `0` written by an earlier version is switched on once, at the next game start; set it back to `0` to switch it off. See [Settings](#settings). - Claude
+- Report page: a **second known crash** is recognised, the crash while the game prepares a draw call (`witcher3.exe+0x1EECD86` and `+0x1EECF31`), reported by three players. The page says what is known and asks for a crash dump. - Claude, from players' logs
+- Installer: on a game version other than 5.0.16 it says the release was tested with 5.0.16 and that other versions may work too. It used to say the fix stays inactive there, which a player's log showed is no longer true. - Havoc and Claude
+- README and description: a player's crash log showed the fix switching itself on in game version 5.0.15.65482, where the code sits at other places. - Havoc, from a player's log
+- README and description: the game part of the version number is the game version the release was tested with; older or newer game versions may work too. - Havoc
+- README and description: Epic players are asked to try the latest version of the mod. - Havoc
+- README and description: a "Known issue" section for the second known crash. - Claude
+- The descriptor page fix is unchanged.
+
+**Do I need to update?** The fix itself is the same, so there is no hurry. If you get the GPU crash or the draw-call crash, a report from 2.3.0 says more about it.
 
 ### 2.2.0-5.0.16
 
@@ -394,7 +417,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, and 2.2.0 with Claude Fable 5.2. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, 2.2.0 with Claude Fable 5.2, and 2.3.0 with Claude Opus 5.5 and Claude Fable 5.2. Everything was tested over many hours of play before publishing.
 
 **Who did what.** The bug was only found because I let Claude analyse my crash dumps, and the technical explanations in this README were drafted by Claude. Since version 1.0.0, most changes were my ideas and every decision was mine; Claude worked out the details and wrote the code. For example, I wanted the mod to open the crash log after a crash and let players send it to me; showing that in a single browser page was Claude's idea, so a crashing game opens one window instead of several.
 

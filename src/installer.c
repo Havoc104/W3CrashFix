@@ -23,7 +23,7 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"2.2.0-5.0.16"
+#define W3CF_VERSION   L"2.3.0-5.0.16"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 #define GAME_VER       L"5.0.16.41566"
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
@@ -331,9 +331,9 @@ static void refresh(void) {
         canUninstall = di == 1 || asi || left;
 
         wchar_t a[300], b[300], c[600];
-        if (vok) swprintf(a, 300, L"Game version: %ls (supported).", ver);
-        else swprintf(a, 300, L"Game version: %ls. This release is made for %ls; on other versions the fix stays "
-                              L"inactive. Check for a newer W3CrashFix release.", ver, GAME_VER);
+        if (vok) swprintf(a, 300, L"Game version: %ls (tested).", ver);
+        else swprintf(a, 300, L"Game version: %ls. This release was tested with %ls; other versions may work too "
+                              L"(the fix switches on only if it finds its code). The log shows whether it did.", ver, GAME_VER);
         if (di == 1) swprintf(b, 300, L"Installed now: W3CrashFix standalone (dinput8.dll).");
         else if (asi) swprintf(b, 300, L"Installed now: W3CrashFix ASI plugin (W3CrashFix.asi).");
         else if (left) swprintf(b, 300, L"Installed now: nothing. Files left over from an earlier removal can be cleaned up with Uninstall.");
@@ -440,8 +440,11 @@ static void action(int install) {
     int asi = want_asi();
     if (install && !game_version(root, ver, 64)) {
         wchar_t q[512];
-        swprintf(q, 512, L"Your game version is %ls, but this release is made for %ls.\n\n"
-                         L"The fix checks the game code and stays inactive (harmless) on other versions.\nInstall anyway?", ver, GAME_VER);
+        // 23 Nov 2026 (Onno: "it should be noted that older/newer versions may work too"): since 1.8.0 the fix also
+        // switches on where it finds its code at other places (seen in a player's log on 5.0.15.65482).
+        swprintf(q, 512, L"Your game version is %ls. This release was tested with %ls.\n\n"
+                         L"Other versions may work too: the fix looks for the game code it needs and switches on only "
+                         L"when it finds it. Otherwise it stays off (harmless).\nInstall anyway?", ver, GAME_VER);
         if (MessageBoxW(g_wnd, q, L"W3CrashFix " W3CF_VERSION, MB_YESNO | MB_ICONWARNING) != IDYES) return;
     }
     // The ASI plugin without Ultimate ASI Loader: allowed, because the user is free to try another loader, but only
