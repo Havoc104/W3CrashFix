@@ -345,7 +345,7 @@ if ($code -eq 0) {
     & "$lic\witcher3.exe" "$PWD\$lic\W3CrashFix.asi" accept | Out-Null
     if ($LASTEXITCODE) { throw "test_diag: the license dialog did not appear or Accept failed (exit $LASTEXITCODE)" }
     $ll = Get-Content "$lic\W3CrashFix.activity.log" -Raw
-    foreach ($need in 'license: asking the user to accept the MIT License', 'held until the user has chosen', 'license: the game continues', 'license: accepted (saved in W3CrashFix.ini') {
+    foreach ($need in 'license: asking the user to accept the license (GNU GPL v3 or later)', 'held until the user has chosen', 'license: the game continues', 'license: accepted (saved in W3CrashFix.ini') {
         if (-not $ll.Contains($need)) { throw "test_diag: license log lacks '$need'" }
     }
     if ((IniVal "$lic\W3CrashFix.ini" 'LicenseAccepted') -ne $licId) { throw 'test_diag: OK did not store the license id in W3CrashFix.ini' }

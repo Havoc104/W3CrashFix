@@ -1,5 +1,5 @@
 // W3CrashFix - crash reporter for The Witcher 3: Wild Hunt Remastered (DX12).
-// Copyright (c) 2026 Onno Struijk (Havoc104). MIT License, see LICENSE.
+// Copyright (c) 2026 Onno Struijk (Havoc104). GNU General Public License v3.0 or later, see LICENSE.
 //
 // Up to 2.3.0 this was an in-memory fix for the game's descriptor heap leak (a crash at witcher3.exe+0x280ad3d in
 // game version 5.0.16). Game patch 5.02 (26 Nov 2026) fixes that leak in the game itself, so since 3.0.0 the fix is
@@ -456,7 +456,7 @@ static void game_version(void) {
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
 // <mod version>-<game version it was tested with> (Onno, 26 Nov 2026: "5.0.16 meant tested with and i want to keep it
 // in for the new version we test with"). 5.0.17 is the file version of game patch 5.02 (the menu says 5.02).
-#define W3CF_VERSION "3.0.0-5.0.17"
+#define W3CF_VERSION "3.0.1-5.0.17"
 static const char *g_flavor = "";
 static char g_adapterName[192] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -615,7 +615,7 @@ static void fmt_stack(const CONTEXT *start) {
 // ---------------------------------------------------------------- settings: W3CrashFix.ini
 // One readable file next to the mod instead of several small ones:
 //   [W3CrashFix]
-//   LicenseAccepted=MIT-2      the license text the user accepted (W3CF_LICENSE_ID); written by the mod or the installer
+//   LicenseAccepted=GPL-3      the license text the user accepted (W3CF_LICENSE_ID); written by the mod or the installer
 //   ReportId=0123456789ABCDEF  the random report id (see below)
 //   OpenReportPage=1           0 = after a crash only the crash log is saved; no page and no folder window open
 //   GpuCrashDetails=1          1 = switch on D3D12's DRED, so a GPU crash report says which GPU work was unfinished
@@ -1863,7 +1863,7 @@ static void start_work(void);
 
 #ifdef W3_LICENSE
 // ---------------------------------------------------------------- license dialog
-// At game start the mod shows a Windows dialog with the MIT License. Until the user accepts with OK, the mod does
+// At game start the mod shows a Windows dialog with the license (since 3.0.1 the GNU GPL v3 or later). Until the user accepts with OK, the mod does
 // nothing: no hooks, no crash report. OK accepts: it stores the id of the license text as
 // LicenseAccepted in W3CrashFix.ini next to the mod, and the dialog is not shown again unless the license changes (the
 // installer stores the same when the user accepts there). OK with the "I decline" box ticked renames the mod's own file to
@@ -1881,7 +1881,7 @@ static HINSTANCE g_hmod;
 static wchar_t g_self[MAX_PATH];                     // full path of the mod's own file
 static const char g_licTitle[] = "W3CrashFix " W3CF_VERSION " - license";
 static const char g_licIntro[] =
-    "W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use it at your own risk.\r\n\r\n"
+    "W3CrashFix is free software under the GNU General Public License, version 3 or later. It comes WITHOUT ANY WARRANTY: you use it at your own risk.\r\n\r\n"
     "It notices a crash of the game and saves a report about it on your PC. It changes no game files and no game code, "
     "and the mod itself sends nothing over the internet.\r\n\r\n"
     "Please read the license below, then click \"OK (Apply this mod)\". To decline, tick the box at the bottom first: "
@@ -2038,7 +2038,7 @@ static void release_game(void) {
 
 static DWORD WINAPI license_thread(LPVOID unused) {
     (void)unused;
-    logf("license: asking the user to accept the MIT License");
+    logf("license: asking the user to accept the license (GNU GPL v3 or later)");
     if (g_licOlder) logf("license: an acceptance of an earlier license text was found - the window says that the license has changed");
     int r = license_dialog();
     if (r == 1) {

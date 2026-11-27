@@ -46,7 +46,7 @@ W3CrashFix reports crashes. It does not fix them. A report can tell you where to
 - **DX12 mode only.** The DX11 executable (`bin\x64`) is not covered.
 - **Any store version.** Since 3.0.0 the mod no longer looks for particular game code, so it no longer depends on the store. It was made and tested on the Steam version.
 
-**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `3.0.0-5.0.17` is mod version 3.0.0, tested with game version 5.0.17 (5.02 Steam).
+**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `3.0.1-5.0.17` is mod version 3.0.1, tested with game version 5.0.17 (5.02 Steam).
 
 ### Tested with
 
@@ -108,7 +108,7 @@ The installer shows your game version, and says so when it is older than patch 5
 Start the game and accept the license if the window appears (see below). Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 3.0.0-5.0.17 (...) loaded, pid ... ====
+==== W3CrashFix 3.0.1-5.0.17 (...) loaded, pid ... ====
 game: exe timestamp ... (patch 5.02 or newer)
 hooks installed: yes (...)
 ```
@@ -121,7 +121,7 @@ The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini
 
 ```ini
 [W3CrashFix]
-LicenseAccepted=MIT-2
+LicenseAccepted=GPL-3
 ReportId=0123456789ABCDEF
 OpenReportPage=1
 GpuCrashDetails=0
@@ -138,7 +138,7 @@ DefaultsSet=3
 
 ### The license window
 
-The first time you start the game with W3CrashFix, a small window appears before the game does. It shows the MIT License, under which the mod is published, and says in plain words that the mod comes without any warranty.
+The first time you start the game with W3CrashFix, a small window appears before the game does. It shows the license under which the mod is published, the GNU General Public License (version 3 or later), and says in plain words that the mod comes without any warranty.
 
 - **OK (Apply this mod)** accepts the license and switches the mod on. The window does not appear again unless the license itself changes; when it does, the window says so.
 - To decline, tick **I decline. Remove W3CrashFix from this game.** The button then reads **OK (Remove this mod)**. The mod stays off and renames its own file to `W3CrashFix.removed`, so that it never loads again.
@@ -207,7 +207,14 @@ The bug was in the case where the GPU keeps up with the CPU. A page's last fence
 
 The name after a line says whose idea it was: Havoc's, Claude's, or something a player's log showed.
 
-### 3.0.0-5.0.17
+### 3.0.1-5.0.17
+
+3.0.1 replaces 3.0.0, which was online for about an hour on 27 November 2026: the same crash reporter, under a new license.
+
+- **New license: the GNU General Public License, version 3 or later.** Everyone may still use, change and share W3CrashFix for free. Whoever shares a changed version must share its source code under the same license. Because the license changed, the license window appears once more. W3CrashFix 3.0.0 and older were published under the MIT License, and stay under it. - Havoc
+- The additional permission for CD PROJEKT RED S.A. is gone with it. It was written for the fix, which the game now has itself. - Havoc
+
+The rest, new since 2.3.0:
 
 W3CrashFix is now a crash reporter. Game patch 5.02 fixes the descriptor heap leak in the game itself, so the fix this mod was made for is obsolete and has been taken out. So far forty-five crash reports from twenty-eight players have arrived; thank you to everyone who sent one.
 
@@ -417,7 +424,7 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, 2.2.0 with Claude Fable 5.2, 2.3.0 with Claude Opus 5.5 and Claude Fable 5.2, and 3.0.0 with Claude Fable 5.2. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, 2.2.0 with Claude Fable 5.2, 2.3.0 with Claude Opus 5.5 and Claude Fable 5.2, and 3.0.0 and 3.0.1 with Claude Fable 5.2 and Claude Opus 5.5. Everything was tested over many hours of play before publishing.
 
 **Who did what.** The bug was only found because I let Claude analyse my crash dumps, and the technical explanations in this README were drafted by Claude. Since version 1.0.0, most changes were my ideas and every decision was mine; Claude worked out the details and wrote the code. For example, I wanted the mod to open the crash log after a crash and let players send it to me; showing that in a single browser page was Claude's idea, so a crashing game opens one window instead of several.
 
@@ -429,7 +436,9 @@ W3CrashFix is free. If it helped you and you'd like to say thanks, you can buy m
 
 ## License and credits
 
-MIT. See [LICENSE](LICENSE).
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+W3CrashFix 3.0.0 and older were published under the MIT License (from 1.6.0 with an additional permission for CD PROJEKT RED S.A.), and stay under it.
 
 **Authors:** Onno Struijk (Havoc104) and Claude.
 

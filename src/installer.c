@@ -3,7 +3,7 @@
 //   standalone  -> bin\x64_dx12\dinput8.dll
 //   ASI plugin  -> bin\x64_dx12\W3CrashFix.asi (needs Ultimate ASI Loader, the only loader W3CrashFix supports; the
 //                  installer only checks for it and links to it - it is a third-party project and is not included)
-// Copyright (c) 2026 Onno Struijk (Havoc104). MIT License, see LICENSE.
+// Copyright (c) 2026 Onno Struijk (Havoc104). GNU General Public License v3.0 or later, see LICENSE.
 //
 // Command line (for scripts and tests):
 //   W3CrashFix-Installer.exe --install-standalone | --install-asi | --uninstall  "<game folder>"
@@ -23,7 +23,7 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"3.0.0-5.0.17"
+#define W3CF_VERSION   L"3.0.1-5.0.17"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
 // Game patch 5.02 has file version 5.0.17.x. Since 3.0.0 W3CrashFix holds no fix of its own (that patch has it), so
 // the installer only says so when the game is older.
@@ -403,7 +403,7 @@ static INT_PTR CALLBACK lic_proc(HWND d, UINT m, WPARAM w, LPARAM l) {
             for (wchar_t *n = wcsstr(lic, whole[k]); n; n = wcsstr(n + 1, whole[k]))
                 for (size_t i = 0; i < wcslen(whole[k]); i++) if (n[i] == L' ') n[i] = 0x00A0;
         SetWindowTextW(d, L"W3CrashFix " W3CF_VERSION L" - license");
-        SetDlgItemTextW(d, IDL_INTRO, L"W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use "
+        SetDlgItemTextW(d, IDL_INTRO, L"W3CrashFix is free software under the GNU General Public License, version 3 or later. It comes WITHOUT ANY WARRANTY: you use "
                                       L"it at your own risk.\r\n\r\nRead the license below. \"Accept and install\" accepts it and "
                                       L"installs W3CrashFix. Nothing is installed if you cancel.");
         SetDlgItemTextW(d, IDL_TEXT, lic);
