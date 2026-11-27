@@ -1,10 +1,13 @@
-// W3CrashFix - in-memory crash fix for The Witcher 3: Wild Hunt Remastered, DX12, witcher3.exe 5.0.16.41566.
+// W3CrashFix - crash reporter for The Witcher 3: Wild Hunt Remastered (DX12).
 // Copyright (c) 2026 Onno Struijk (Havoc104). MIT License, see LICENSE.
 //
-// The fix (THE FIX below): descriptor-page leak that ends in a crash at witcher3.exe+0x280ad3d.
-// Also logs descriptor heap statistics to W3CrashFix.activity.log next to the module.
-// Built as dinput8.dll (standalone proxy) or W3CrashFix.asi (for Ultimate ASI Loader). Nothing on disk is modified;
-// every patch first verifies the exact game code it was written for and disables itself on any mismatch.
+// Up to 2.3.0 this was an in-memory fix for the game's descriptor heap leak (a crash at witcher3.exe+0x280ad3d in
+// game version 5.0.16). Game patch 5.02 (26 Nov 2026) fixes that leak in the game itself, so since 3.0.0 the fix is
+// left out entirely (Onno, 26 Nov 2026: "newer versions should leave the original fix out entirely as it's obsolete").
+// What remains: when the game crashes, whatever the cause, the mod saves a crash report on the player's PC and shows
+// a page that explains it. It also logs descriptor heap statistics to W3CrashFix.activity.log next to the module.
+// Built as dinput8.dll (standalone proxy) or W3CrashFix.asi (for Ultimate ASI Loader). The mod changes no game code
+// and no file of the game.
 
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
@@ -68,7 +71,6 @@ static SRWLOCK g_lk = SRWLOCK_INIT;
 #define TOMB ((void *)1)
 static long long g_live[4][2], g_liveDesc[4][2], g_created[4][2], g_failed;
 static long long g_peakSv[2];                        // highest live shader-visible heap count (CBV_SRV_UAV, SAMPLER)
-static volatile LONG64 g_rescued, g_retiredNormal;   // fix statistics
 
 static size_t hsh(void *p) { return (((size_t)p >> 4) * 0x9E3779B97F4A7C15ull) >> (64 - 17); }
 static void tab_add(void *p, int t, int f, int n) {
@@ -112,11 +114,10 @@ static void summary(const char *why) {
     char v[256]; vram(v, sizeof v);
     AcquireSRWLockShared(&g_lk);
     logf("[%s] live shader-visible: CBV_SRV_UAV %lld heaps / %lld desc, SAMPLER %lld heaps / %lld desc | "
-         "live cpu-only: CBV %lld, SMP %lld, RTV %lld, DSV %lld | created sv: %lld/%lld, failed %lld | "
-         "fix: pages rescued %lld, retired normally %lld | %s",
+         "live cpu-only: CBV %lld, SMP %lld, RTV %lld, DSV %lld | created sv: %lld/%lld, failed %lld | %s",
          why, g_live[0][1], g_liveDesc[0][1], g_live[1][1], g_liveDesc[1][1],
          g_live[0][0], g_live[1][0], g_live[2][0], g_live[3][0],
-         g_created[0][1], g_created[1][1], g_failed, g_rescued, g_retiredNormal, v);
+         g_created[0][1], g_created[1][1], g_failed, v);
     ReleaseSRWLockShared(&g_lk);
 }
 
@@ -412,298 +413,40 @@ static int patch(void **slot, void *fn, void **orig) {
     return 1;
 }
 
-// ---------------------------------------------------------------- THE FIX
-// witcher3.exe 5.0.16 (DX12) shader-visible descriptor page allocator, w3+0x2809760 ("ensure room for n").
-// When the current page is full it is moved to the retired list. Pages leave the retired list only when a
-// GPU-fence queue entry for them completes while they are NOT current. A page whose last fence entry already
-// completed while it was still current (common when the GPU keeps up with the CPU) is retired with
-// pending==0 and usesThisFrame==0, never gets another fence entry, and is orphaned forever. One new
-// 1024-descriptor heap leaks per page fill until CreateDescriptorHeap returns E_OUTOFMEMORY (~4000 heaps),
-// the game stores a NULL page and crashes at w3+0x280ad3d.
-// Fix: reimplement the function; a retired page that is already idle goes straight to the free list.
-enum {
-    RVA_ENSURE = 0x2809760, RVA_INVALIDATE = 0x2809bb0, RVA_CREATEPAGE = 0x2809ef0, RVA_VECGROW = 0x28080d0,
-    RVA_FORCENEW = 0x2809810,
-    A_USED = 0x0, A_CUR = 0x8, A_RETIRED = 0xe8, A_FREE = 0x108, A_CAP = 0x130,   // allocator fields
-    P_PENDING = 0x8, P_FRAMEUSES = 0xc,                                            // page fields
-    V_DATA = 0x0, V_COUNT = 0x10, V_CAPACITY = 0x18,                                // game vector
-};
-static const struct { unsigned rva; const char *name, *hex; } g_sig[] = {
-    {RVA_ENSURE,     "ensure",     "40534883ec200311488bd93b91300100000f8e8c00000048"},
-    {RVA_FORCENEW,   "forcenew",   "48895c2408574883ec20488db9e8000000488bd9488b4710"},
-    {RVA_INVALIDATE, "invalidate", "4881c15801000041b8040000004533c9488b41f84885c074"},
-    {RVA_CREATEPAGE, "createpage", "48895c2410574883ec308b81300100004c8d4c2440894424"},
-    {RVA_VECGROW,    "vecgrow",    "48895c241048896c24184889742420574883ec304c8b4118"},
-};
-// Finding the code (Onno, 19 Nov 2026: "good idea"). A game update that only moves code around should not need a new
-// version of the mod. So each function is checked by a fingerprint of its WHOLE body, not only its first 24 bytes,
-// and if it is not at its 5.0.16 place, the mod looks for it in the rest of the game's code.
-// The fingerprint: the body's length and a 64-bit FNV-1a hash of all its bytes, in which the 4-byte fields that
-// change whenever code moves, even when the code itself is the same, count as 0: the distance of a call or jump to
-// code outside the function, and of a reference to the game's data. Everything else counts: every instruction, every
-// field offset in the allocator and page structures, every jump inside the function. The table holds no game code,
-// only these numbers. The fix is switched on only when ALL of this holds, and otherwise stays off (FIX DISABLED, with
-// the diag: lines as before):
-//   1. each of the five functions is at its 5.0.16 place with the same fingerprint, or else at exactly ONE other place
-//      in the game's code with the same first 24 bytes and the same fingerprint (two or more such places: off);
-//   2. the calls between them point at each other: ensure and forcenew must call vecgrow, invalidate and createpage
-//      exactly where those were found.
-// The crash function (crashfn, which holds the crash address) is looked for the same way, only for the verdict of the
-// crash report; if it is not found the fix still works, and the verdict says it cannot tell which crash it was.
-// Made with Claude's script from the 5.0.16 executable (Steam), 19 Nov 2026.
-enum { F_ENSURE, F_FORCENEW, F_INVALIDATE, F_CREATEPAGE, F_VECGROW, F_CRASHFN, F_COUNT, F_NEEDED = F_CRASHFN };
-static const struct { const char *name; unsigned rva, len; unsigned long long fnv; int nmask; unsigned short mask[5]; } g_body[F_COUNT] = {
-    {"ensure",     RVA_ENSURE,     0xA9,  0x45AA40975DA7D0B3ULL, 3, {0x36, 0x7D, 0x92}},
-    {"forcenew",   RVA_FORCENEW,   0x9C,  0x7A8B08B99E5FF502ULL, 3, {0x27, 0x69, 0x83}},
-    {"invalidate", RVA_INVALIDATE, 0x222, 0xC739991A451FC58AULL, 0, {0}},
-    {"createpage", RVA_CREATEPAGE, 0x103, 0xCBE81B8F6D7434B3ULL, 2, {0x1C, 0x9D}},
-    {"vecgrow",    RVA_VECGROW,    0xE6,  0x6894705B3814E5EAULL, 4, {0x22, 0x77, 0x9B, 0xB5}},
-    {"crashfn",    0x280ABA0,      0x1EB, 0x7F902515BEAF8820ULL, 5, {0x48, 0xC4, 0xDA, 0x159, 0x18A}},
-};
-static const char g_crashfnStart[] = "48895c240844894424184889542410555657415441554156";   // first 24 bytes of crashfn
-#define CRASHFN_CRASH_AT 0x19D                       // the crash address inside crashfn (5.0.16: w3+0x280AD3D)
-static const struct { int from; unsigned at; int to; } g_xref[] = {   // call rel32 at body offset 'at' must reach 'to'
-    {F_ENSURE, 0x36, F_VECGROW}, {F_ENSURE, 0x7D, F_INVALIDATE}, {F_ENSURE, 0x92, F_CREATEPAGE},
-    {F_FORCENEW, 0x27, F_VECGROW}, {F_FORCENEW, 0x69, F_INVALIDATE}, {F_FORCENEW, 0x83, F_CREATEPAGE},
-    {F_CRASHFN, 0x159, F_ENSURE},
-};
-static unsigned g_at[F_COUNT];                       // where each function was found in this game (0 = not found)
-static unsigned g_crashRva;                          // the crash address in this game (0 = crash function not found)
-static int g_moved;                                  // the code was found at other places than in 5.0.16
-static unsigned char *g_base;
+// ---------------------------------------------------------------- the game version
+// Until 2.3.0 this part held THE FIX: a replacement for the game's descriptor page allocator function, the search
+// for that code in other game builds, and a diagnostic for builds it did not know. All of it is gone since 3.0.0:
+// game patch 5.02 recycles an idle page itself, so the fix is obsolete, and this mod no longer touches game code.
+// What is left is one question, answered from the executable's build date: is this game older than patch 5.02?
+// Then it still has the leak, and the log and the crash report say so, with what to do (update the game; 2.3.0 is
+// the last version that carries the fix). No game code is read for this, only the date in the file's header.
+#define W3_PATCH_502_TIMESTAMP 0x6B070671u           // witcher3.exe of patch 5.02 (Steam, 26 Nov 2026)
+static unsigned char *g_base;                        // witcher3.exe in memory; NULL when the mod runs in another program
 static wchar_t g_dir[MAX_PATH];                      // folder of the mod, with trailing backslash
-static int g_buildOk, g_fixInstalled;                // game code recognised / detour installed
-static volatile LONG g_fixActive;                    // detour installed AND the license accepted: pages are rescued
+static int g_oldGame;                                // the game is older than patch 5.02: it still has the leak
 // The license dialog (see "license dialog" below) is compiled in with -DW3_LICENSE, which build.ps1 always passes.
 // Built without it, g_accepted is always 1 and the mod starts working right away.
 static volatile LONG g_accepted = 1;                 // the user accepted the license (now or in an earlier session)
 #ifdef W3_CRASHTEST
-static volatile LONG g_testCrash;                    // 1 = real heap crash requested, 2 = done, 3 = plain crash, 4 = GPU device removed (F9), 5 / 6 = known renderer crash (F10 / F11)
+static volatile LONG g_testCrash;                    // 3 = plain crash (F7), 4 = GPU device removed (F9), 7 = empty pointer (F12)
 #endif
-typedef void (*Invalidate_t)(unsigned char *alloc, void *page);
-typedef void *(*CreatePage_t)(unsigned char *alloc);
-typedef void (*VecGrow_t)(unsigned char *vec, long long elemSize);
-
-#define F64(p, o) (*(long long *)((unsigned char *)(p) + (o)))
-#define F32(p, o) (*(int *)((unsigned char *)(p) + (o)))
-#define FPTR(p, o) (*(void **)((unsigned char *)(p) + (o)))
-
-static void vec_push(unsigned char *v, void *x) {
-    if (!(F64(v, V_CAPACITY) > F64(v, V_COUNT))) ((VecGrow_t)(g_base + g_at[F_VECGROW]))(v, 8);
-    long long n = F64(v, V_COUNT);
-    F64(v, V_COUNT) = n + 1;
-    ((void **)FPTR(v, V_DATA))[n] = x;
-}
-
-static void fixed_ensure(unsigned char *a, int n) {
-#ifdef W3_CRASHTEST
-    // Test builds only: reproduce the real crash. The game stores a NULL page when it can't create another heap
-    // and then crashes at w3+0x280ad3d; doing the same here gives that exact crash on demand.
-    if (InterlockedCompareExchange(&g_testCrash, 2, 1) == 1) {
-        logf("TEST: storing a NULL page, as the game does when it runs out of descriptor heaps");
-        FPTR(a, A_CUR) = NULL; F32(a, A_USED) = 0;
-        return;
-    }
-#endif
-    if (F32(a, A_USED) + n <= F32(a, A_CAP)) return;
-    void *old = FPTR(a, A_CUR);
-    if (old) {
-#ifdef W3_LICENSE
-        // Until the license is accepted (g_fixActive == 0) this function does exactly what the game's own code
-        // does: every full page goes to the retired list.
-        if (g_fixActive && F32(old, P_PENDING) == 0 && F32(old, P_FRAMEUSES) == 0) {
-#else
-        if (F32(old, P_PENDING) == 0 && F32(old, P_FRAMEUSES) == 0) {
-#endif
-            vec_push(a + A_FREE, old);           // idle: reusable right away
-            InterlockedIncrement64(&g_rescued);
-        } else {
-            vec_push(a + A_RETIRED, old);        // in flight: normal fence-based recycling
-            InterlockedIncrement64(&g_retiredNormal);
-        }
-    }
-    void *page;
-    long long nfree = F64(a, A_FREE + V_COUNT);
-    if (nfree > 0) {
-        page = ((void **)FPTR(a, A_FREE + V_DATA))[nfree - 1];
-        F64(a, A_FREE + V_COUNT) = nfree - 1;
-        ((Invalidate_t)(g_base + g_at[F_INVALIDATE]))(a, page);   // drop cached tables pointing into it
-    } else {
-        page = ((CreatePage_t)(g_base + g_at[F_CREATEPAGE]))(a);
-    }
-    FPTR(a, A_CUR) = page;
-    F32(a, A_USED) = 0;
-}
-
-
-// ---------------------------------------------------------------- diagnostic for unsupported game builds
-// When the game's code is not the build this fix was written for (another store's executable, a game update),
-// nothing is patched. To make it possible to add support without having that executable, the log then describes
-// the build: its PE header values, the code bytes found where each function was expected, and where in the
-// executable the same code pattern does occur. Read-only; a few dozen bytes of code per function, no user data.
 static int readable(const unsigned char *p, size_t n) {
     MEMORY_BASIC_INFORMATION mi;
     if (!VirtualQuery(p, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
     return (const unsigned char *)mi.BaseAddress + mi.RegionSize >= p + n;
 }
-static int hexbytes(const char *hex, unsigned char *out, int max) {
-    int n = 0;
-    for (; hex[0] && hex[1] && n < max; hex += 2) { char b[3] = {hex[0], hex[1], 0}; out[n++] = (unsigned char)strtoul(b, NULL, 16); }
-    return n;
-}
-static void hexstr(const unsigned char *p, int n, char *out) {
-    for (int i = 0; i < n; i++) out += sprintf(out, "%02x", p[i]);
-    *out = 0;
-}
-// Calls cb(rva) for every occurrence of pat in the executable sections of the image; returns the count.
-static int scan(const unsigned char *pat, int n, unsigned *hits, int maxhits) {
-    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
-    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
-    int count = 0;
-    for (unsigned s = 0; s < nt->FileHeader.NumberOfSections; s++) {
-        if (!(sec[s].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
-        const unsigned char *p = g_base + sec[s].VirtualAddress, *end = p + sec[s].Misc.VirtualSize;
-        while (p < end) {                                    // walk the section one committed region at a time
-            MEMORY_BASIC_INFORMATION mi;
-            if (!VirtualQuery(p, &mi, sizeof mi)) break;
-            const unsigned char *rend = (const unsigned char *)mi.BaseAddress + mi.RegionSize;
-            if (rend > end) rend = end;
-            if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-                for (const unsigned char *q = p; q + n <= rend; q++) {
-                    q = memchr(q, pat[0], (size_t)(rend - q) - n + 1);
-                    if (!q) break;
-                    if (!memcmp(q, pat, n)) { if (count < maxhits) hits[count] = (unsigned)(q - g_base); count++; }
-                }
-            p = rend;
-        }
-    }
-    return count;
-}
-static void diagnose(void) {
-    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
-    DWORD image = nt->OptionalHeader.SizeOfImage;
-    wchar_t exe[MAX_PATH]; WIN32_FILE_ATTRIBUTE_DATA fa = {0};
-    GetModuleFileNameW(NULL, exe, MAX_PATH); GetFileAttributesExW(exe, GetFileExInfoStandard, &fa);
-    logf("diag: this build of the game is not supported yet. The 'diag:' lines describe it (game code locations only,");
-    logf("diag: nothing personal). Posting this log on the mod page is what is needed to add support for your version.");
-    logf("diag: exe timestamp 0x%08lX, image size 0x%lX, checksum 0x%lX, file size %llu",
-         (unsigned long)nt->FileHeader.TimeDateStamp, (unsigned long)image, (unsigned long)nt->OptionalHeader.CheckSum,
-         ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow);
-    int moved = 0, total = (int)(sizeof g_sig / sizeof g_sig[0]);
-    for (int i = 0; i < total; i++) {
-        unsigned char pat[32], *at = g_base + g_sig[i].rva; char hx[2 * 48 + 1];
-        int n = hexbytes(g_sig[i].hex, pat, sizeof pat);
-        if ((unsigned long long)g_sig[i].rva + 48 <= image && readable(at, 48)) {
-            if (!memcmp(at, pat, n)) { logf("diag: %s: as expected at w3+0x%X", g_sig[i].name, g_sig[i].rva); moved++; continue; }
-            hexstr(at, 48, hx); logf("diag: %s: not at w3+0x%X, found there: %s", g_sig[i].name, g_sig[i].rva, hx);
-        } else logf("diag: %s: w3+0x%X is outside this executable", g_sig[i].name, g_sig[i].rva);
-        unsigned hits[4]; int c = scan(pat, n, hits, 4);
-        if (c > 0) {
-            char where[80] = ""; for (int k = 0; k < c && k < 4; k++) sprintf(where + strlen(where), " w3+0x%X", hits[k]);
-            logf("diag: %s: same code found %d time(s) at:%s", g_sig[i].name, c, where);
-            if (c == 1) moved++;
-        } else {
-            c = scan(pat, 12, hits, 3);                      // function start only: the body differs in this build
-            logf("diag: %s: same code not found; %d place(s) start the same way", g_sig[i].name, c);
-            for (int k = 0; k < c && k < 3; k++)
-                if (readable(g_base + hits[k], 48)) { hexstr(g_base + hits[k], 48, hx); logf("diag: %s:   w3+0x%X: %s", g_sig[i].name, hits[k], hx); }
-        }
-    }
-    logf("diag: %d of %d functions located%s", moved, total,
-         moved == total ? " - this build can probably be supported with a small update" : "");
-}
-
-// Finding the code (see g_body): the fingerprint of the function body at p, compared with function i's.
-static int body_ok(const unsigned char *p, int i) {
-    unsigned len = g_body[i].len;
-    if (!readable(p, len)) return 0;
-    unsigned long long h = 0xcbf29ce484222325ULL;               // FNV-1a 64
-    for (unsigned k = 0; k < len; k++) {
-        unsigned char b = p[k];
-        for (int m = 0; m < g_body[i].nmask; m++)
-            if (k >= g_body[i].mask[m] && k < g_body[i].mask[m] + 4u) { b = 0; break; }
-        h = (h ^ b) * 0x100000001b3ULL;
-    }
-    return h == g_body[i].fnv;
-}
-// Where function i is in this game: its 5.0.16 place if the body is the same there, or else the one and only other
-// place in the game's code with the same first 24 bytes and the same body; 0 if there is none or more than one.
-static unsigned find_fn(int i, DWORD image) {
-    unsigned r = g_body[i].rva;
-    if ((unsigned long long)r + g_body[i].len <= image && body_ok(g_base + r, i)) return r;
-    unsigned char pat[24];
-    int n = hexbytes(i < F_NEEDED ? g_sig[i].hex : g_crashfnStart, pat, sizeof pat);
-    unsigned hits[16], found = 0;
-    int c = scan(pat, n, hits, 16), same = 0;
-    if (c > 16) return 0;                                       // too many candidates to tell: off
-    for (int k = 0; k < c; k++)
-        if ((unsigned long long)hits[k] + g_body[i].len <= image && body_ok(g_base + hits[k], i)) { found = hits[k]; same++; }
-    return same == 1 ? found : 0;
-}
-// Does the call whose 4-byte distance sits at offset 'at' of the function at rva 'from' reach rva 'to'?
-static int calls_to(unsigned from, unsigned at, unsigned to) {
-    int rel; memcpy(&rel, g_base + from + at, 4);
-    return (long long)from + at + 4 + rel == (long long)to;
-}
-
-static void install_fix(void) {
+static void game_version(void) {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH);
-    if (!wcsstr(exe, L"witcher3.exe")) { logf("fix: not witcher3.exe - disabled"); return; }
+    if (!wcsstr(exe, L"witcher3.exe")) { logf("game: this is not witcher3.exe"); return; }
     g_base = (unsigned char *)GetModuleHandleW(NULL);
-    DWORD image = ((IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew))->OptionalHeader.SizeOfImage;
-    // See "Finding the code" above: all five functions, by their whole body, and the calls between them.
-    for (int i = 0; i < F_NEEDED; i++) {
-        g_at[i] = find_fn(i, image);
-        if (!g_at[i]) {
-            logf("fix: %s (w3+0x%X in 5.0.16) not found with the same code in this game build - FIX DISABLED (probe still logs)",
-                 g_body[i].name, g_body[i].rva);
-            diagnose();
-            return;
-        }
-        if (g_at[i] != g_body[i].rva) g_moved = 1;
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(g_base + ((IMAGE_DOS_HEADER *)g_base)->e_lfanew);
+    g_oldGame = nt->FileHeader.TimeDateStamp < W3_PATCH_502_TIMESTAMP;
+    logf("game: exe timestamp 0x%08lX, image size 0x%lX (%s)", (unsigned long)nt->FileHeader.TimeDateStamp,
+         (unsigned long)nt->OptionalHeader.SizeOfImage, g_oldGame ? "older than patch 5.02" : "patch 5.02 or newer");
+    if (g_oldGame) {
+        logf("game: this game version still has the game's descriptor heap leak, which crashes the game after a while. Patch 5.02 fixes it.");
+        logf("game: W3CrashFix no longer contains its own fix for that: update the game, or use W3CrashFix 2.3.0, the last version with the fix.");
     }
-    for (unsigned k = 0; k < sizeof g_xref / sizeof g_xref[0]; k++)
-        if (g_xref[k].from < F_NEEDED && !calls_to(g_at[g_xref[k].from], g_xref[k].at, g_at[g_xref[k].to])) {
-            logf("fix: %s does not call %s where that was found - FIX DISABLED (probe still logs)",
-                 g_body[g_xref[k].from].name, g_body[g_xref[k].to].name);
-            diagnose();
-            return;
-        }
-    // The crash function: only for the verdict of a crash report.
-    g_at[F_CRASHFN] = find_fn(F_CRASHFN, image);
-    if (g_at[F_CRASHFN] && calls_to(g_at[F_CRASHFN], 0x159, g_at[F_ENSURE])) g_crashRva = g_at[F_CRASHFN] + CRASHFN_CRASH_AT;
-    else { g_at[F_CRASHFN] = 0; logf("fix: the function that holds the crash address was not found; the crash report cannot tell which crash it was"); }
-    if (g_moved) {
-        logf("fix: this game build is not 5.0.16 as W3CrashFix knows it, but the code the fix needs is the same, at other places:");
-        for (int i = 0; i < F_COUNT; i++)
-            if (g_at[i]) logf("fix:   %s at w3+0x%X (5.0.16: w3+0x%X)", g_body[i].name, g_at[i], g_body[i].rva);
-    }
-    g_buildOk = 1;
-#ifdef W3_CRASHTEST
-    {   // Test builds only: an empty file W3CrashFix.nofix next to the mod leaves the fix out, so the real crash
-        // can be awaited with the crash report active. A release build ignores such a file.
-        wchar_t off[MAX_PATH]; lstrcpyW(off, g_dir); lstrcatW(off, L"W3CrashFix.nofix");
-        if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) {
-            logf("fix: NOT installed because W3CrashFix.nofix exists (test build) - the game will leak descriptor heaps and crash");
-            return;
-        }
-    }
-#endif
-    unsigned char jmp[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};   // mov rax, imm64 ; jmp rax
-    void *target = (void *)fixed_ensure;
-    memcpy(jmp + 2, &target, 8);
-    DWORD old;
-    unsigned char *ens = g_base + g_at[F_ENSURE];
-    if (VirtualProtect(ens, sizeof jmp, PAGE_EXECUTE_READWRITE, &old)) {
-        memcpy(ens, jmp, sizeof jmp);
-        VirtualProtect(ens, sizeof jmp, old, &old);
-        FlushInstructionCache(GetCurrentProcess(), ens, sizeof jmp);
-        g_fixInstalled = 1;
-        if (g_accepted) {
-            g_fixActive = 1;
-            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", g_at[F_ENSURE]);
-        } else logf("fix: ready, but switched off until the license is accepted (the game behaves as without the mod)");
-    } else logf("fix: VirtualProtect failed %lu - FIX DISABLED", GetLastError());
 }
 
 // ---------------------------------------------------------------- crash report
@@ -711,8 +454,9 @@ static void install_fix(void) {
 // short summary on top, and writes W3CrashFix-report.html next to it and opens that page. The page shows the summary
 // and two ways to report it (a pre-filled GitHub issue, or copy the summary and open the Nexus page). Nothing is
 // sent by the mod itself. OpenReportPage=0 in W3CrashFix.ini stops the page from opening.
-// <mod version>-<game version it is built for>; the game part changes whenever the fix is ported to a new patch
-#define W3CF_VERSION "2.3.0-5.0.16"
+// <mod version>-<game version it was tested with> (Onno, 26 Nov 2026: "5.0.16 meant tested with and i want to keep it
+// in for the new version we test with"). 5.0.17 is the file version of game patch 5.02 (the menu says 5.02).
+#define W3CF_VERSION "3.0.0-5.0.17"
 static const char *g_flavor = "";
 static char g_adapterName[192] = "unknown";
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter;
@@ -931,15 +675,21 @@ static void load_settings(void) {
     // crash reports so far came without the details). Earlier versions wrote "GpuCrashDetails=0" into the file themselves
     // as the visible default, so a 0 there is not the user's choice: it is switched on once, and DefaultsSet=2 records
     // that this was done. A 0 the user sets after that stays.
+    // OFF by default again since 3.0.0 (Onno, 26 Nov 2026: "agreed on all"): the details were switched on to look into
+    // the GPU crash; that crash is a driver or hardware matter no mod can fix, so it is no longer looked into, the
+    // details do nothing for a player, and they were only ever tested on one NVIDIA card. DefaultsSet=3 records it:
+    //   DefaultsSet=2 and GpuCrashDetails=1: 2.3.0 put that 1 there (or the user did; it cannot be told apart) ->
+    //     switched off once, and the log says how to switch it on again;
+    //   no DefaultsSet: a file of 2.2.0 or older, or a new one -> the value stays as it is (0 if there is none).
+    // A 1 the user sets after that stays.
     ini_get(L"DefaultsSet", cur, sizeof cur);
     ini_get(L"GpuCrashDetails", v, sizeof v);
-    if (atoi(cur) < 2) {
-        if (strcmp(v, "1")) {
-            int was0 = !strcmp(v, "0");
-            ini_set(L"GpuCrashDetails", "1"); lstrcpyA(v, "1");
-            if (was0) logf("settings: GpuCrashDetails is on by default from this version and was switched on once (set it to 0 in W3CrashFix.ini to switch it off)");
-        }
-        ini_set(L"DefaultsSet", "2");
+    if (atoi(cur) < 3) {
+        if (atoi(cur) == 2 && !strcmp(v, "1")) {
+            ini_set(L"GpuCrashDetails", "0"); lstrcpyA(v, "0");
+            logf("settings: GpuCrashDetails is off by default again from this version and was switched off once (set it to 1 in W3CrashFix.ini to switch it on)");
+        } else if (!v[0]) { ini_set(L"GpuCrashDetails", "0"); lstrcpyA(v, "0"); }
+        ini_set(L"DefaultsSet", "3");
     }
     g_dredWanted = strcmp(v, "1") == 0;
     ini_get(L"CrashDump", v, sizeof v);
@@ -949,7 +699,7 @@ static void load_settings(void) {
 // ---------------------------------------------------------------- in-game mods and the report id
 // Where the report page's one button leads: an upload page ("file request") of the author's pCloud storage. The
 // user's browser opens it and the user picks the file there; the mod itself sends nothing.
-#define W3CF_UPLOAD_URL "https://u.pcloud.com/#/puplink?code=AilXZFWjrIdFCRypf5hzHODSQLbE119u7"
+#define W3CF_UPLOAD_URL "https://u.pcloud.com/#/puplink?code=zWdXZzLODaU9OrXB0jfUNWFnvj0Tnuz3V"
 // The crash log's own folder, next to the mod (see crash_report).
 #define W3CF_REPORT_DIR   "W3CrashFix crash report"
 #define W3CF_REPORT_DIR_W L"W3CrashFix crash report"
@@ -1108,6 +858,9 @@ static void ini_shorten_notes(void) {
         // 2.3.0: the GpuCrashDetails note of 2.1.0 to 2.2.0 says "0 = off (default)"; the setting is on by default now.
         // That note began with "; GpuCrashDetails: 1 = "; it is taken out the same way, and the new one follows.
         if (!inNote && !strncmp(line, "; GpuCrashDetails: 1 = ", 23)) inNote = 1;
+        // 3.0.0: off by default again, so the 2.3.0 note ("... 1 = on (default) ...") goes the same way. It began with
+        // "; GpuCrashDetails: after a"; the current one begins with "; GpuCrashDetails: extra".
+        if (!inNote && !strncmp(line, "; GpuCrashDetails: after a", 26)) inNote = 1;
         if (inNote && strncmp(line, g_idNoticePrefix, sizeof g_idNoticePrefix - 1)) { dropped++; line += len; continue; }
         memcpy(out + o, line, len); o += len;
         line += len;
@@ -1177,13 +930,12 @@ static void ini_note_settings(void) {
         { "LicenseAccepted",
           "; LicenseAccepted: the license you accepted in the license window.\r\n"
           "; Leave it as it is: without this line the license window comes back at\r\n"
-          "; the next game start, and the fix stays off until you accept.\r\n" },
+          "; the next game start, and the mod stays off until you accept.\r\n" },
         { "GpuCrashDetails",
-          "; GpuCrashDetails: after a graphics card crash (\"Gpu Crash for unknown\r\n"
-          "; reasons\") the crash log also says which work the graphics card had not\r\n"
-          "; finished. 1 = on (default), 0 = off. It may cost a little frame rate on\r\n"
-          "; some PCs; none was measurable on the author's.\r\n"
-          "; Takes effect at the next game start.\r\n" },
+          "; GpuCrashDetails: extra details in the crash log after a graphics card\r\n"
+          "; crash (\"Gpu Crash for unknown reasons\"): which work the graphics card\r\n"
+          "; had not finished. 0 = off (default), 1 = on. It may cost a little frame\r\n"
+          "; rate on some PCs. Takes effect at the next game start.\r\n" },
         { "CrashDump",
           "; CrashDump: 1 = a crash also saves a crash dump, W3CrashFix.crash.dmp,\r\n"
           "; next to the crash log. 0 = off (default).\r\n"
@@ -1652,91 +1404,60 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
         logf("[CRASH] GPU state: %s", g_gpuState);
     }
 
-    long long rva =g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
-    // Since 1.6.2 the verdict also looks at the call stack (Onno, 18 Nov 2026, after a test where the empty page was
-    // used one call deeper, at witcher3.exe+0x2809364, called from +0x280AD2E). The same crash, an empty page read
-    // through a NULL pointer, then shows up in a function that the crash function called. It counts as the
-    // descriptor heap crash when the exception is a read near address 0 and one of the next three entries of the
-    // call stack lies in the function that holds witcher3.exe+0x280AD3D (found with the game's own unwind data).
-    // Since 1.8.0 the crash address is the one found in this game (g_crashRva, see "Finding the code"); in 5.0.16 it is
-    // witcher3.exe+0x280AD3D.
-    int deeper = 0;
-    if (g_buildOk && g_base && g_crashRva && rva != g_crashRva && code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2 &&
-        er->ExceptionInformation[0] == 0 && er->ExceptionInformation[1] < 0x10000) {
-        DWORD64 ib = 0;
-        PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry((DWORD64)(ULONG_PTR)(g_base + g_crashRva), &ib, NULL);
-        if (fn && ib == (DWORD64)(ULONG_PTR)g_base)
-            for (int i = 1; i < g_crNFrames && i <= 3 && !deeper; i++) {
-                DWORD64 r = g_crFrames[i] - ib;
-                if (g_crFrames[i] > ib && r > fn->BeginAddress && r <= fn->EndAddress) deeper = 1;
-            }
-    }
-    // Since 2.0.0 (Onno, 20 Nov 2026: "it should be made clearer that w3crashfix does not cause this crash"): the verdict
-    // also says whether W3CrashFix's own code took part. It is checked, not assumed: the crash address and every entry of
-    // the call stack are looked up, and only when none of them lies in W3CrashFix's own file does the verdict say that
-    // W3CrashFix did not cause it. If one does, it says so and asks for the log.
-    // Worded as what was checked, not as a certainty (Onno agreed, 20 Nov 2026): the stack check is strong evidence, not
-    // proof (a wrong page handed out earlier could make the game crash later somewhere else). So it says "no sign", and
-    // adds that the fix rescued no pages only when that is true in this session.
-    static char notOurs[1100], others[440];
+    long long rva = g_base ? (long long)((unsigned char *)er->ExceptionAddress - g_base) : -1;
+    // The verdict. Since 3.0.0 W3CrashFix has no fix of its own any more (game patch 5.02 has it), so the verdict no
+    // longer says whether this is "the crash W3CrashFix fixes". It says three things:
+    //  - whether W3CrashFix's own code took part (since 2.0.0; Onno, 20 Nov 2026: "it should be made clearer that
+    //    w3crashfix does not cause this crash"). It is checked, not assumed: the crash address and every entry of the
+    //    call stack are looked up. Worded as what was checked ("no sign"), not as a certainty.
+    //  - whether another mod is a likely cause (Onno, 26 Nov 2026: "no chasing, but we could still tell them their
+    //    crash is most likely mod related (other mods)" - "in the crash page"), graded by what the report shows:
+    //      an add-on in the call stack            -> "most likely caused by another mod or add-on" (and it is named)
+    //      a modded game, no add-on in the stack  -> "another mod or add-on is a likely cause", with the numbers
+    //      a clean game, or the graphics card dropped out (a driver or hardware matter) -> nothing added
+    //    "Modded" here: at least one in-game mod, or more than one DLL/ASI file besides the game's own and this mod
+    //    (one such file is usually just the ASI loader this mod itself needs).
+    //  - on a game older than patch 5.02: that the game should be updated first.
+    static char verdictBuf[1700], others[640];
     others[0] = 0;
+    int nOtherFiles = atoi(g_otherFiles);                        // "N: file, file" or "none (...)" / "not read yet" -> 0
     if (g_crOthers[0])
         snprintf(others, sizeof others, " Also in the call stack: %s, which %s not part of the game or Windows (a mod, script extender, "
-                 "overlay or other add-on), so %s may be involved.", g_crOthers, strchr(g_crOthers, ',') ? "are" : "is",
-                 strchr(g_crOthers, ',') ? "they" : "it");
+                 "overlay or other add-on). This crash is most likely caused by another mod or add-on, not by the game itself: "
+                 "the place to ask is the author of %s.", g_crOthers, strchr(g_crOthers, ',') ? "are" : "is",
+                 strchr(g_crOthers, ',') ? "those files" : "that file");
+    else if (!g_crOurs && strncmp(g_gpuState, "REMOVED", 7) && (g_modsFound > 0 || nOtherFiles > 1))
+        snprintf(others, sizeof others, " This game runs %d in-game mod(s) and %d other DLL or ASI file(s), so another mod or add-on is a likely "
+                 "cause. W3CrashFix cannot tell which one. Does the crash also happen without them? If not, the authors of those mods are the ones to ask.",
+                 g_modsFound, nOtherFiles);
     int stackKnown = ep->ContextRecord && strcmp(g_crStack, "not available");
-    const char *why =
-        g_crOurs ? "W3CrashFix's own code is in the call stack of this crash, so it may be involved: please send this crash log."
-        : stackKnown && g_rescued == 0 ? "There is no sign that W3CrashFix caused it: its own code is not at the crash address or in the call stack, "
-                                         "and its fix rescued no pages in this session. W3CrashFix only noticed the crash and saved this report."
-        : stackKnown ? "There is no sign that W3CrashFix caused it: its own code is not at the crash address or in the call stack. "
-                       "W3CrashFix only noticed the crash and saved this report."
-        : "W3CrashFix only noticed the crash and saved this report.";
-    snprintf(notOurs, sizeof notOurs, "This is NOT the crash that W3CrashFix fixes (that one is at witcher3.exe+0x%X). %s%s%s", g_crashRva,
-             why, g_crOurs ? "" : " Something else crashed the game.", others);
-    const char *verdict =
-        !g_buildOk ? "W3CrashFix does not support this build of the game, so it cannot tell which crash this is."
-        : !g_crashRva ? "W3CrashFix did not find the place of its crash in this build of the game, so it cannot tell which crash this is."
-        : rva != g_crashRva && !deeper ? notOurs
-        : g_fixActive ? (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack), although the fix was active. That should not happen: please report it."
-                                : "This is the descriptor heap crash that W3CrashFix is made for, although the fix was active. That should not happen: please report it.")
-        : (deeper ? "This is the descriptor heap crash that W3CrashFix is made for (here one call deeper than usual, see the call stack). The fix was not active in this session."
-                  : "This is the descriptor heap crash that W3CrashFix is made for. The fix was not active in this session.");
-    // Known crashes (since 2.0.0; Onno, 19 Nov 2026, "all of them", idea 3): crash places that several players' reports
-    // share, with what is known and what may help. Shown on the report page and in the summary, so a player gets help
-    // at once. Only for the game build the addresses come from (5.0.16, not moved). The list grows with each release,
-    // from promo\Crash-Table.ps1; an entry needs reports from at least three players.
-    // Since test48 (Onno's test of 20 Nov 2026, "all 4"): the tips are a list of their own, shown on the report page as a
-    // separate block below the summary instead of one long paragraph in it; the GPU tip says whether GpuCrashDetails is
-    // already on; and no "yet" in "the cause is not known" (no promises in public texts).
-    // Onno, 26 Nov 2026 ("yes", after the analysis of the +0x1EECxxx crashes of three players): an entry can also ask for
-    // a crash dump (kind 2). Those crashes are the game's renderer binding draw state to a command-list context that is
-    // gone (+0x1EECD86: set index buffer, the sub-list pointer was garbage; +0x1EECF31: the neighbour, called with a
-    // null handle); the log cannot show what the memory was reused for, a dump can. Such an entry has no tips, so the
-    // "Things that may help:" heading is left out for it.
-    static const char renderListCrash[] =
-        "The game crashed while preparing a draw call: its renderer used a drawing list that was no longer valid. "
-        "Seen in reports from several players, with and without mods. The cause is not known.";
-    static const struct { unsigned rva; int kind; const char *what; const char *tips[4]; } known_crashes[] = {   // kind 1 = GPU crash, 2 = a dump would help
-        { 0x1F103A3, 1,
-          "The graphics card dropped out, and the game stopped itself with \"Gpu Crash for unknown reasons\". "
-          "Seen in reports from several players, half of them on graphics cards with 6 GB of memory. The cause is not known.",
+    snprintf(verdictBuf, sizeof verdictBuf, "%s%s%s",
+             g_crOurs ? "W3CrashFix's own code is in the call stack of this crash, so it may be involved: please send this crash log."
+             : stackKnown ? "There is no sign that W3CrashFix caused it: its own code is not at the crash address or in the call stack. "
+                            "W3CrashFix only noticed the crash and saved this report."
+             : "W3CrashFix only noticed the crash and saved this report.",
+             others,
+             g_oldGame ? " This game is older than patch 5.02. That patch fixes a crash in the game itself (the descriptor heap leak), "
+                         "so please update the game first: we only look at crash reports from game version 5.02 or newer." : "");
+    const char *verdict = verdictBuf;
+    // Known crashes (since 2.0.0; Onno, 19 Nov 2026): a crash that several players' reports share, with what is known
+    // and what may help, shown on the report page (a block of its own below the summary) and in the summary.
+    // Since 3.0.0 the list holds one entry, the graphics card dropping out. It is recognised by what happened, not by
+    // an address (Onno, 26 Nov 2026: "agreed on all"), so it works on every game version: the game stopped itself with
+    // a breakpoint and the graphics device is gone. It is explained, not investigated: no request to switch anything
+    // on or to send more. The address-based entries of 2.x (5.0.16 addresses) are gone with the 5.0.16 support.
+    static const struct { const char *what; const char *tips[4]; } known_crashes[] = {
+        { "The graphics card dropped out, and the game stopped itself with \"Gpu Crash for unknown reasons\". "
+          "That is a matter of the graphics driver or the hardware, on games with and without mods. A mod cannot prevent it.",
           { "Update the graphics driver.", "Remove any overclock or undervolt of the graphics card.",
-            "On a card with 8 GB of memory or less, lower texture quality and ray tracing.", NULL } },
-        { 0x1EECD86, 2, renderListCrash, { NULL } },
-        { 0x1EECF31, 2, renderListCrash, { NULL } },
+            "On a card with 8 GB of memory or less, lower texture quality and ray tracing.",
+            // Onno, 26 Nov 2026: "is there a way for them to see that report natively" - Windows' own record of the drop-out
+            "Windows keeps its own record of such a drop-out: press Win+R, run \"perfmon /rel\" and look for a \"Hardware error\" at the time of the crash." } },
     };
-    int ki = -1;
-    for (size_t k = 0; g_buildOk && !g_moved && rva >= 0 && k < sizeof known_crashes / sizeof known_crashes[0]; k++)
-        if ((long long)known_crashes[k].rva == rva) ki = (int)k;
+    int ki = (rva >= 0 && code == EXCEPTION_BREAKPOINT && !strncmp(g_gpuState, "REMOVED", 7)) ? 0 : -1;
     const char *gpuTip = ki < 0 ? NULL
-        : known_crashes[ki].kind == 2 ? (g_dumpWanted && g_mdwd
-            ? "CrashDump is on, so a crash dump is saved next to this log. Please send both files: the dump shows what the log cannot."
-            : "To help find the cause, set CrashDump=1 in W3CrashFix.ini and send the log and the crash dump of the next crash: the dump shows what the log cannot.")
-        : known_crashes[ki].kind != 1 ? NULL
-        : g_dredOn ? "GpuCrashDetails is on, so this crash log already holds the extra GPU details (see \"GPU state\")."
-        : g_dredWanted ? "GpuCrashDetails=1 is set, but it could not take effect in this session (see the activity log); it works from the next game start."
-        : "To help find the cause, set GpuCrashDetails=1 in W3CrashFix.ini and send the log of the next crash: it then says more.";
+        : g_dredOn ? "The \"GPU state\" line of the crash log says why Windows stopped the graphics card and which work it had not finished."
+        : "The \"GPU state\" line of the crash log says why Windows stopped the graphics card.";
     static char knownLine[1024];
     knownLine[0] = 0;
     if (ki >= 0) {
@@ -1769,8 +1490,7 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
              when, "W3CrashFix " W3CF_VERSION, g_flavor, g_reportId);
     if (g_modsFound) snprintf(mods, sizeof mods, "In-game mods (%d): ", g_modsFound); else lstrcpyA(mods, "In-game mods: ");
     snprintf(g_crSum, sizeof g_crSum,
-             "Game build supported: %s\r\n"
-             "Fix active: %s\r\n"
+             "Game: %s\r\n"
              "Crash: exception 0x%08lX (%s%s) at %s\r\n"
              "Registers: %s\r\n"
              "Call stack: %s\r\n"
@@ -1782,14 +1502,13 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
              "Game settings: %s\r\n"
              "Other DLL and ASI files: %s\r\n"
              "Descriptor heaps: %lld live + %lld sampler (peak %lld + %lld), %lld failed creations\r\n"
-             "Fix: %lld pages rescued, %lld retired normally\r\n"
              "Memory: %s\r\n"
              "Verdict: %s\r\n%s%s",
-             !g_buildOk ? "no" : g_moved ? "yes (not 5.0.16, but the same code at other places)" : "yes", g_fixActive ? "yes" : "no",
+             g_oldGame ? "older than patch 5.02 (please update the game)" : "patch 5.02 or newer",
              (unsigned long)code, exc_name(code), detail, at, g_crRegs, g_crStack, g_crFiles,
              (unsigned long)((GetTickCount() - g_t0) / 60000), evs, g_adapterName, g_gpuState, g_gameSettings, g_otherFiles,
              g_live[0][1], g_live[1][1], g_peakSv[0], g_peakSv[1], g_failed,
-             (long long)g_rescued, (long long)g_retiredNormal, mem, verdict, knownLine, test);
+             mem, verdict, knownLine, test);
 
     // W3CrashFix.crash.log = the summary + this session's whole log. Only a newer crash overwrites it. It gets a
     // folder of its own next to the mod, holding nothing else: the folder window that opens after a crash then
@@ -1858,11 +1577,11 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            "If you would like to help, you can send the crash log to the mod's author with the button below.</p>"
            "<p class=\"s\">This page is a file on your own PC, not a website: look at the address bar, it starts with <code>file:</code>. "
            "The mod itself never connects to the internet. Only your browser does, and only when you click the button.</p><pre id=\"s\">");
-    // The page shows only whether the fix was active and the verdict (Onno, 17 Nov 2026: "the less clutter the better");
+    // The page shows only the verdict (Onno, 17 Nov 2026: "the less clutter the better");
     // the full summary stays at the top of the crash log, which is what gets sent.
     {
         char page[2048];
-        snprintf(page, sizeof page, "Fix active: %s\r\nVerdict: %s\r\n%s", g_fixActive ? "yes" : "no", verdict, test);
+        snprintf(page, sizeof page, "Verdict: %s\r\n%s", verdict, test);
         html_esc(page, g_crEsc, sizeof g_crEsc); put(f, g_crEsc);
     }
     if (ki >= 0) {   // a known crash: what is known and the tips, in a block of its own below the summary
@@ -1918,7 +1637,7 @@ static void crash_report(EXCEPTION_POINTERS *ep) {
            // to work with as little steps as possible for them"): no naming request; the log lists the mods itself
            "keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too. Logs of both, with and "
            "without mods, from the same PC are especially helpful; the log shows by itself which mods were there.</p>"
-           "<p>Thanks for sending your crash log. It helps find and fix crashes in W3CrashFix.</p>"
+           "<p>Thanks for sending your crash log. It shows which crashes players run into.</p>"
            "<p class=\"s\">What is sent: only the file you pick, and the name you type on the upload page. The file holds a summary "
            "and the mod's log of the crashed session: technical data, which can include the folder the game is installed in "
            "and the folder names of your in-game mods. "
@@ -1999,10 +1718,10 @@ static void guard_filter(int quiet) {
 
 #ifdef W3_CRASHTEST
 // TEST BUILDS ONLY - never part of a release. Three key combinations crash the game on purpose, while the game window
-// is in front:  Ctrl+Alt+Shift+F7 = plain crash inside the mod,  Ctrl+Alt+Shift+F8 = the real descriptor heap crash,
-// Ctrl+Alt+Shift+F9 = the GPU crash (the game's graphics device removed, see below),  Ctrl+Alt+Shift+F10 / F11 = the
-// two known renderer crashes at witcher3.exe+0x1EECD86 / +0x1EECF31,  Ctrl+Alt+Shift+F12 = a call through an empty
-// function pointer (see below).
+// is in front:  Ctrl+Alt+Shift+F7 = plain crash inside the mod,  Ctrl+Alt+Shift+F9 = the GPU crash (the game's
+// graphics device removed, see below),  Ctrl+Alt+Shift+F12 = a call through an empty function pointer (see below).
+// Gone since 3.0.0, with the fix and the 5.0.16 addresses: F8 (the descriptor heap crash) and F10 / F11 (the two
+// renderer crashes at 5.0.16 addresses).
 static DWORD WINAPI crash_keys(LPVOID unused) {
     (void)unused;
     for (;;) {
@@ -2016,8 +1735,23 @@ static DWORD WINAPI crash_keys(LPVOID unused) {
             g_testCrash = 3;
             *(volatile int *)0 = 1;
         }
-        if ((GetAsyncKeyState(VK_F8) & 0x8000) && InterlockedCompareExchange(&g_testCrash, 1, 0) == 0)
-            logf("TEST: Ctrl+Alt+Shift+F8 - real descriptor heap crash requested%s", g_fixActive ? "" : " (fix not active: nothing will happen)");
+        // F8 (3.0.0, after Onno's F7 test of 27 Nov 2026): F7 and F12 crash inside this mod's own code, so their
+        // verdict rightly says "W3CrashFix's own code is in the call stack". The verdict a player gets ("no sign that
+        // W3CrashFix caused it", plus the other-mod sentence on a modded game) needs a crash WITHOUT the mod in the
+        // call stack: a new thread whose start function is the C runtime's strlen, given the address 1. It faults
+        // inside that Windows file; the call stack is that file, KERNEL32 and ntdll.
+        if ((GetAsyncKeyState(VK_F8) & 0x8000) && InterlockedCompareExchange(&g_testCrash, 8, 0) == 0) {
+            HMODULE crt = GetModuleHandleW(L"ucrtbase.dll");
+            if (!crt) crt = GetModuleHandleW(L"msvcrt.dll");
+            LPTHREAD_START_ROUTINE fn = crt ? (LPTHREAD_START_ROUTINE)(void *)GetProcAddress(crt, "strlen") : NULL;
+            if (!fn) { logf("TEST: Ctrl+Alt+Shift+F8 - no C runtime found in this process; nothing done"); g_testCrash = 0; continue; }
+            logf("TEST: Ctrl+Alt+Shift+F8 - a crash outside the mod: a new thread runs the C runtime's strlen on a bad address");
+            HANDLE t = CreateThread(NULL, 0, fn, (LPVOID)1, 0, NULL);
+            if (t) CloseHandle(t);
+            Sleep(5000);
+            logf("TEST: 5 s after starting that thread the game has not crashed; nothing else done");
+            g_testCrash = 0;
+        }
         // F9 (since test47, Onno, 20 Nov 2026: "are you able to add a key combo to simulate the gpu crash?" - "yes"):
         // D3D12's own test function ID3D12Device5::RemoveDevice puts the game's device in the "removed" state in
         // software, as if the graphics card had dropped out; the driver and the card are not touched. The game then
@@ -2037,46 +1771,6 @@ static DWORD WINAPI crash_keys(LPVOID unused) {
             ID3D12Device5_Release(d5);
             for (int s = 0; s < 20; s++) Sleep(1000);
             logf("TEST: 20 s after the device removal the game has not crashed (it may hang): end it in Task Manager if needed");
-        }
-        // F10 and F11 (since test58, Onno, 26 Nov 2026: "can you simulate those crashes too?" - "yes, do it"): the two
-        // known renderer crashes of the +0x1EECxxx family, at the players' exact addresses, by calling the game's own
-        // two functions with the bad input the players' reports showed. Only on the game build the addresses come
-        // from (5.0.16, code not moved), and only when the functions' first bytes are the expected ones. The call
-        // comes from this thread, so the call stack names W3CrashFix as the caller; the report's test note says why.
-        //   F10: +0x1EECD30 ("set index buffer") with a stand-in renderer object whose context 1 has one sub-list,
-        //        and that sub-list pointer is garbage (the value from a player's report): faults at +0x1EECD86.
-        //   F11: +0x1EECF10 with context handle 0 (the function only refuses -1) and an object address that makes
-        //        the read non-canonical, so it faults at +0x1EECF31 whatever is mapped in this process.
-        int f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0, f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
-        if ((f10 || f11) && InterlockedCompareExchange(&g_testCrash, f10 ? 5 : 6, 0) == 0) {
-            static const unsigned char sigD30[] = { 0x48, 0x83, 0xEC, 0x38, 0x41, 0x8B, 0xC1, 0x83, 0xFA, 0xFF };
-            static const unsigned char sigF10[] = { 0x45, 0x8B, 0xD0, 0x45, 0x8B, 0xD9, 0x83, 0xFA, 0xFF };
-            unsigned char *fn = g_base ? g_base + (f10 ? 0x1EECD30 : 0x1EECF10) : NULL;
-            int ok = g_buildOk && !g_moved && fn;
-            if (ok) ok = !memcmp(fn, f10 ? sigD30 : sigF10, f10 ? sizeof sigD30 : sizeof sigF10);   // readable: the build was recognised
-            if (!ok) {
-                logf("TEST: Ctrl+Alt+Shift+%s - known renderer crash requested, but this is not the game build its addresses come from; nothing done", f10 ? "F10" : "F11");
-                g_testCrash = 0;
-                Sleep(1000);
-                continue;
-            }
-            if (f10) {
-                const size_t ctx = (size_t)0x1345 * 0x1C0;            // context 1 inside the renderer object
-                unsigned char *obj = VirtualAlloc(NULL, ctx + 0x1C0 + 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                if (!obj) { logf("TEST: Ctrl+Alt+Shift+F10 - no memory for the stand-in object; nothing done"); g_testCrash = 0; continue; }
-                unsigned long long *lists = (unsigned long long *)(obj + ctx + 0x1C0);
-                lists[0] = 0xF988000000020000ull;                     // the garbage "sub-list pointer"
-                *(unsigned *)(obj + ctx + 0x100) = 1;                 // one sub-list
-                *(unsigned long long **)(obj + ctx + 0x68) = lists;
-                logf("TEST: Ctrl+Alt+Shift+F10 - known renderer crash: the game's index buffer bind (witcher3.exe+0x1EECD30) with a garbage sub-list pointer");
-                ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned))fn)(obj, 1, 0, 1, 0, 1, 4);
-            } else {
-                logf("TEST: Ctrl+Alt+Shift+F11 - known renderer crash: the game's bind at witcher3.exe+0x1EECF10 with context handle 0");
-                ((void (*)(void *, unsigned, unsigned, unsigned, unsigned, void *))fn)((void *)0x8000000000000000ull, 0, 0, 0, 0, NULL);
-            }
-            logf("TEST: the game's function returned without a crash; nothing else done");
-            g_testCrash = 0;
-            Sleep(1000);
         }
         // F12 (since the test build after test58): a call through an empty function pointer, the kind of crash one
         // player's report showed (crash address 0). The call stack must then start with "0x0 (an empty address ...)"
@@ -2170,11 +1864,11 @@ static void start_work(void);
 #ifdef W3_LICENSE
 // ---------------------------------------------------------------- license dialog
 // At game start the mod shows a Windows dialog with the MIT License. Until the user accepts with OK, the mod does
-// nothing: the fix is switched off, no hooks, no crash report. OK accepts: it stores the id of the license text as
+// nothing: no hooks, no crash report. OK accepts: it stores the id of the license text as
 // LicenseAccepted in W3CrashFix.ini next to the mod, and the dialog is not shown again unless the license changes (the
 // installer stores the same when the user accepts there). OK with the "I decline" box ticked renames the mod's own file to
 // W3CrashFix.removed, so that it no longer loads; nothing is deleted and no other program is started.
-// The dialog is only shown on a game build the mod supports: on any other build the fix is off anyway.
+// Since 3.0.0 the dialog is shown on every game version (before: only on a build the fix supported).
 #include "w3cf_license.h"
 #define ID_ACCEPT  101
 #define ID_DECLINE 102
@@ -2188,8 +1882,8 @@ static wchar_t g_self[MAX_PATH];                     // full path of the mod's o
 static const char g_licTitle[] = "W3CrashFix " W3CF_VERSION " - license";
 static const char g_licIntro[] =
     "W3CrashFix is free software under the MIT License. It comes WITHOUT ANY WARRANTY: you use it at your own risk.\r\n\r\n"
-    "It fixes a bug in the game's code in memory while the game runs. It changes no game files, and the mod itself "
-    "sends nothing over the internet.\r\n\r\n"
+    "It notices a crash of the game and saves a report about it on your PC. It changes no game files and no game code, "
+    "and the mod itself sends nothing over the internet.\r\n\r\n"
     "Please read the license below, then click \"OK (Apply this mod)\". To decline, tick the box at the bottom first: "
     "W3CrashFix is then switched off and removed from this game.";
 static const char g_licText[] = W3CF_LICENSE_TEXT;
@@ -2351,10 +2045,6 @@ static DWORD WINAPI license_thread(LPVOID unused) {
         if (ini_set(L"LicenseAccepted", W3CF_LICENSE_ID)) logf("license: accepted (saved in W3CrashFix.ini; the dialog will not be shown again unless the license changes)");
         else logf("license: accepted, but W3CrashFix.ini could not be written (error %lu) - the dialog will return", GetLastError());
         g_accepted = 1;
-        if (g_fixInstalled) {
-            g_fixActive = 1;
-            logf("fix: descriptor page recycling fix ACTIVE (w3+0x%X detoured)", g_at[F_ENSURE]);
-        }
         if (g_dredWanted && g_cwSlot) dred_switch_on((LPVOID)1);    // the game is still held before its window: see dred_switch_on
         start_work();
     } else if (r == 3) {
@@ -2367,18 +2057,18 @@ static DWORD WINAPI license_thread(LPVOID unused) {
             logf("license: declined - the mod's file was renamed to W3CrashFix.removed and will not load again");
             snprintf(msg, sizeof msg, "W3CrashFix is switched off and will not load again.\n\nIts file was renamed to:\n%s\n\nYou can delete that file.", to8);
         } else {
-            logf("license: declined - the mod's file could not be renamed (error %lu); the fix stays off for this session", GetLastError());
+            logf("license: declined - the mod's file could not be renamed (error %lu); the mod stays off for this session", GetLastError());
             snprintf(msg, sizeof msg, "W3CrashFix is switched off for this session, but its file could not be renamed.\n\nTo remove the mod, close the game and delete:\n%s", self8);
         }
         MessageBoxA(NULL, msg, g_licTitle, MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
-    } else logf("license: the dialog ended without a choice - the fix stays off for this session");   // only if it could not be shown
+    } else logf("license: the dialog ended without a choice - the mod stays off for this session");   // only if it could not be shown
     release_game();
     return 0;
 }
 #endif
 
 // Exported by the .asi build (see w3crashfix_asi.def) so that only this one symbol is public.
-const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for witcher3.exe 5.0.16.41566 (DX12)"; }
+const char *W3CrashFixVersion(void) { return "W3CrashFix " W3CF_VERSION " for The Witcher 3: Wild Hunt Remastered (DX12)"; }
 
 static HANDLE open_log(const wchar_t *path) {
     return CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
@@ -2389,8 +2079,8 @@ static HANDLE open_log(const wchar_t *path) {
 // "so do modded games", "go with 2"). The report page only appears after a crash, so a player whose game did NOT crash
 // had no way to send a log. This page is written at every game start next to the mod and is never opened by the mod:
 // the player opens it from the game's bin\x64_dx12 folder (README and Nexus say so). It has the same Send button as the
-// report page, for W3CrashFix.activity.log. On a game build the mod doesn't support (for example the Epic version) it
-// says that this log is especially helpful: its "diag:" lines show how that build differs. Nothing is sent by the mod.
+// report page, for W3CrashFix.activity.log. On a game older than patch 5.02 it says that the game should be updated
+// first (since 3.0.0: only reports from 5.02 or newer are looked at). Nothing is sent by the mod.
 static void write_send_page(void) {
     wchar_t path[MAX_PATH];
     HANDLE f = create_in_dir(L"W3CrashFix-send-log.html", path);
@@ -2410,9 +2100,9 @@ static void write_send_page(void) {
            "<p><b>Every log is welcome, also from a game that did not crash</b>, with or without other mods. A session without a crash "
            "shows how the game behaves when all goes well, and can be compared with sessions that crashed. "
            "Logs of both, with and without mods, from the same PC are especially helpful.</p>");
-    if (!g_buildOk)
-        put(f, "<p class=\"o\"><b>Your log is especially helpful.</b> W3CrashFix does not support this build of the game (for example the "
-               "Epic version), so the fix is off. The log shows how this build differs, which is what is needed to make the fix work on it.</p>");
+    if (g_oldGame)
+        put(f, "<p class=\"o\"><b>Please update the game first.</b> This game is older than patch 5.02. That patch fixes a crash in the "
+               "game itself, and we only look at logs and crash reports from game version 5.02 or newer.</p>");
     put(f, "<p class=\"s\">This page is a file on your own PC, not a website: look at the address bar, it starts with <code>file:</code>. "
            "The mod itself never connects to the internet. Only your browser does, and only when you click the button.</p>"
            "<p><b>The file to send:</b><br><code>");
@@ -2451,12 +2141,12 @@ static void write_send_page(void) {
     logf("send page: W3CrashFix-send-log.html written (open it to send this log, also without a crash)");
 }
 
-// Everything the mod does besides the fix itself: crash report, heap statistics. Runs only after the license is accepted.
+// Everything the mod does: crash report, heap statistics. Runs only after the license is accepted.
 static void start_work(void) {
     char opv[8]; ini_get(L"OpenReportPage", opv, sizeof opv);
     if (!opv[0]) ini_set(L"OpenReportPage", "1");        // make the setting visible to anyone who opens the file
     char gcd[8]; ini_get(L"GpuCrashDetails", gcd, sizeof gcd);
-    if (!gcd[0]) ini_set(L"GpuCrashDetails", "1");       // the same, for the GPU details (on by default, see load_settings)
+    if (!gcd[0]) ini_set(L"GpuCrashDetails", "0");       // the same, for the GPU details (off by default, see load_settings)
     if (g_dredWanted) {                                  // before the game creates its graphics device; init waits for that
         HANDLE g = CreateThread(NULL, 0, dred_switch_on, NULL, 0, NULL);
         if (g) CloseHandle(g);
@@ -2475,7 +2165,7 @@ static void start_work(void) {
     guard_filter(1);
     AddVectoredExceptionHandler(1, crash_notice);
 #ifdef W3_CRASHTEST
-    logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = plain crash, Ctrl+Alt+Shift+F8 = descriptor heap crash, Ctrl+Alt+Shift+F9 = GPU crash (device removed)");
+    logf("TEST BUILD - crash keys are enabled: Ctrl+Alt+Shift+F7 = crash inside the mod, F8 = crash outside the mod, F9 = GPU crash (device removed), F12 = call through an empty pointer");
     HANDLE k = CreateThread(NULL, 0, crash_keys, NULL, 0, NULL);
     if (k) CloseHandle(k);
 #endif
@@ -2508,7 +2198,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
 #else
         const char *flavor = "dinput8 proxy";
 #endif
-        // Only one copy may patch the game: dinput8.dll and the .asi build installed together would
+        // Only one copy may work in the game: dinput8.dll and the .asi build installed together would
         // otherwise hook everything twice. The second copy to load stays passive (and leaves the log alone).
         wchar_t name[64];
         wsprintfW(name, L"Local\\W3CrashFix-%lu", GetCurrentProcessId());
@@ -2531,22 +2221,13 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         load_settings();
 #ifdef W3_LICENSE
         // The license: accepted for this version in an earlier session (W3CrashFix.ini), or asked in a dialog.
-        // The dialog is only for the game itself; in any other program the mod never patches anything anyway.
+        // The dialog is only for the game itself. Since 3.0.0 it is shown on every game version (before, a game
+        // build the fix did not support got no dialog, because there was nothing to switch on).
         wchar_t exe[MAX_PATH];
         GetModuleFileNameW(NULL, exe, MAX_PATH);
         int ask = wcsstr(exe, L"witcher3.exe") && !accepted_this_license();
         g_accepted = !ask;
-        // The detour goes in now, before any game code runs: no thread can be inside the patched function. While
-        // the license is not accepted it behaves exactly like the game's own code (see fixed_ensure).
-        install_fix();
-#ifdef W3_LICENSE_TEST
-        // Build tests only (never in a release, see build.ps1): the stand-in "game" of the tests is not a supported
-        // build, and the dialog must still be testable.
-        logf("license dialog test variant: the dialog is also shown on an unsupported build");
-#else
-        // On a game build the mod doesn't support, the fix is off anyway: there is nothing to accept, so no dialog.
-        if (ask && !g_buildOk) { ask = 0; g_accepted = 1; }
-#endif
+        game_version();
         if (!ask) start_work();
         else {
             hold_game();
@@ -2554,7 +2235,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
             if (t) CloseHandle(t); else release_game();
         }
 #else
-        install_fix();   // before any game code runs: no thread can be inside the patched function
+        game_version();
         start_work();
 #endif
     }

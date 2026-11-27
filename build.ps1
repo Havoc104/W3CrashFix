@@ -98,21 +98,21 @@ Run @cc @modFlags -shared -DW3_ASI -o build\W3CrashFix.asi src\w3crashfix.c src\
 # installer embeds both files above (see src\installer.rc), so it is built after them
 Run @cc @installerFlags -o build\W3CrashFix-Installer.exe src\installer.c src\installer.rc @guiLibs
 Set-PeChecksum build\W3CrashFix-Installer.exe
-# A test variant of the mod, only for the license dialog tests below: the stand-in "game" of the tests is not a
-# supported build, on which the real mod shows no dialog. This variant shows it anyway. It is never released.
-New-Item -ItemType Directory -Force build\license | Out-Null
-Run @cc @modFlags -DW3_LICENSE_TEST -shared -DW3_ASI -o build\license\W3CrashFix.asi src\w3crashfix.c src\w3crashfix_asi.def -luser32 -lkernel32
 'Built build\dinput8.dll, build\W3CrashFix.asi and build\W3CrashFix-Installer.exe'
 
-# Test: a stand-in "witcher3.exe" that is not the game (src\test_diag.c). The mod must leave it unpatched, describe it
-# in 'diag:' lines, and - if this PC has a D3D12 device - name the caller of a descriptor heap.
+# Test: a stand-in "witcher3.exe" that is not the game (src\test_diag.c). The mod must say which game version it sees
+# ('game:' line) and - if this PC has a D3D12 device - name the caller of a descriptor heap. Since 3.0.0 the mod holds
+# no fix and reads no game code, so the tests for finding and patching the game's code are gone; the log must not
+# mention a fix being active or disabled.
 $t = 'build\test\diag'
 New-Item -ItemType Directory -Force $t | Out-Null
 Remove-Item "$t\*.log" -ErrorAction SilentlyContinue
 Run @cc -municode -o "$t\witcher3.exe" src\test_diag.c -ld3d12 -ldxguid -luser32
 Copy-Item build\W3CrashFix.asi $t -Force
 $licId = (Select-String src\w3cf_license.h -Pattern '#define W3CF_LICENSE_ID "(.+)"').Matches[0].Groups[1].Value
-Remove-Item "$t\W3CrashFix.ini", "$t\W3CrashFix.accepted", "$t\W3CrashFix.id", "$t\W3CrashFix.noreport" -ErrorAction SilentlyContinue   # no acceptance: on this unsupported stand-in the dialog must stay away by itself
+Remove-Item "$t\W3CrashFix.ini", "$t\W3CrashFix.accepted", "$t\W3CrashFix.id", "$t\W3CrashFix.noreport" -ErrorAction SilentlyContinue
+# Since 3.0.0 the license dialog is shown on every game version, so the tests accept it up front, the way the installer does.
+Set-Content "$t\W3CrashFix.ini" "[W3CrashFix]`r`nLicenseAccepted=$licId" -Encoding ascii
 # A value from the mod's settings file (W3CrashFix.ini), or '' if the file or the key is missing.
 function IniVal($file, $key) {
     if (Test-Path $file) { $m = Select-String -Path $file -Pattern "^$key=(.*)$"; if ($m) { return $m[0].Matches[0].Groups[1].Value.Trim() } }
@@ -121,38 +121,9 @@ function IniVal($file, $key) {
 $out =& "$t\witcher3.exe" "$PWD\$t\W3CrashFix.asi" heap
 $code = $LASTEXITCODE
 $log = if (Test-Path "$t\W3CrashFix.activity.log") { Get-Content "$t\W3CrashFix.activity.log" -Raw } else { '' }
-foreach ($need in 'FIX DISABLED', 'diag: 4 of 5 functions located', 'ensure: same code found 1 time') {
-    if (-not $log.Contains($need)) { throw "test_diag: log lacks '$need'" }
-}
-if ($log.Contains('ACTIVE')) { throw 'test_diag: the mod patched a program that is not the game' }
-if ($log.Contains('license: asking')) { throw 'test_diag: the license dialog was shown on an unsupported build' }
-if ($log -match 'not found with the same code') { } else { throw 'test_diag: the stand-in has only the first bytes of each function; the mod must say it did not find them with the same code' }
-
-# Finding the code (1.8.0): the stand-in copies the six real functions from the installed game to other places in its
-# own code (nothing of the game is in this repository). The mod must find all of them, say they moved, and detour the
-# copy of ensure. With a second copy of ensure it must patch nothing. Needs the real 5.0.16 witcher3.exe on this PC;
-# without it the test is skipped and says so.
-$gameExe = if ($env:W3_GAME_EXE) { $env:W3_GAME_EXE } else { 'C:\Games\The Witcher 3\bin\x64_dx12\witcher3.exe' }
-if (Test-Path $gameExe) {
-    $r = 'build\test\reloc'
-    Remove-Item $r -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $r | Out-Null
-    Copy-Item "$t\witcher3.exe", build\W3CrashFix.asi $r
-    Set-Content "$r\W3CrashFix.ini" "[W3CrashFix]`r`nLicenseAccepted=$licId`r`nOpenReportPage=0" -Encoding ascii
-    $ro = (& "$r\witcher3.exe" "$PWD\$r\W3CrashFix.asi" reloc $gameExe) -join "`n"
-    $rl = Get-Content "$r\W3CrashFix.activity.log" -Raw
-    foreach ($need in 'the code the fix needs is the same, at other places', 'fix:   ensure at w3+0x', 'fix:   crashfn at w3+0x', 'fix: descriptor page recycling fix ACTIVE') {
-        if (-not $rl.Contains($need)) { throw "reloc test: log lacks '$need'`n$ro" }
-    }
-    if ($ro -notmatch 'detour on the copy of ensure: yes') { throw "reloc test: the copy of ensure was not detoured`n$ro" }
-    Remove-Item "$r\W3CrashFix.activity.log", "$r\W3CrashFix.activity.previous.log" -ErrorAction SilentlyContinue
-    $ro = (& "$r\witcher3.exe" "$PWD\$r\W3CrashFix.asi" relocdup $gameExe) -join "`n"
-    $rl = Get-Content "$r\W3CrashFix.activity.log" -Raw
-    if (-not $rl.Contains('ensure (w3+0x2809760 in 5.0.16) not found with the same code') -or $rl.Contains('ACTIVE')) { throw "reloc test: with two copies of ensure the mod must patch nothing`n$rl" }
-    if ($ro -notmatch 'detour on the copy of ensure: no') { throw "reloc test: a copy of ensure was detoured although there were two`n$ro" }
-    Remove-Item $r -Recurse -Force
-    'Test passed: finding the code at other places (and refusing when it is there twice)'
-} else { "Test SKIPPED: finding the code at other places (no game executable at $gameExe; set W3_GAME_EXE)" }
+if ($log -notmatch 'game: exe timestamp 0x[0-9A-F]{8}, image size 0x[0-9A-F]+ \((older than patch 5\.02|patch 5\.02 or newer)\)') { throw 'test_diag: the log lacks the game version line' }
+foreach ($gone in 'FIX DISABLED', 'ACTIVE', 'diag:', 'detour') { if ($log.Contains($gone)) { throw "test_diag: the log still mentions '$gone' (the fix is gone since 3.0.0)" } }
+if ($log.Contains('license: asking')) { throw 'test_diag: the license dialog was shown although the license was accepted in W3CrashFix.ini' }
 if ($code -eq 0) {
     if ($log -notmatch 'caller=witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: heap caller was not named' }
     if ($log -notmatch 'driver: \d+\.\d+\.\d+\.\d+') { throw 'test_diag: the graphics driver version was not logged (2.0.0)' }
@@ -168,6 +139,7 @@ if ($code -eq 0) {
     New-Item -ItemType Directory -Force $ngx | Out-Null
     Remove-Item "$ngx\*.log" -ErrorAction SilentlyContinue
     Copy-Item "$t\witcher3.exe", "$t\W3CrashFix.asi" $ngx -Force
+    Set-Content "$ngx\W3CrashFix.ini" "[W3CrashFix]`r`nLicenseAccepted=$licId" -Encoding ascii   # accepted: no license dialog here
     & "$ngx\witcher3.exe" "$PWD\$ngx\W3CrashFix.asi" heap | Out-Null
     $log2 = if (Test-Path "$ngx\W3CrashFix.activity.log") { Get-Content "$ngx\W3CrashFix.activity.log" -Raw } else { '' }
     if ($log2 -notmatch 'caller=dlssg\\witcher3\.exe\+0x[0-9A-F]+') { throw 'test_diag: feature folder missing from the caller name' }
@@ -178,6 +150,7 @@ if ($code -eq 0) {
     $clf = "$t\W3CrashFix crash report\W3CrashFix.crash.log"
     Remove-Item "$t\W3CrashFix crash report" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item "$t\W3CrashFix-report.html", "$t\W3CrashFix.ini", "$t\W3CrashFix-send-log.html" -ErrorAction SilentlyContinue
+    Set-Content "$t\W3CrashFix.ini" "[W3CrashFix]`r`nLicenseAccepted=$licId" -Encoding ascii   # accepted, as after the installer: no license dialog
     Set-Content "$t\W3CrashFix.crash.log" 'an old crash log in the old place' -Encoding ascii
     Remove-Item 'build\Mods', 'build\DLC' -Recurse -Force -ErrorAction SilentlyContinue
     Set-Content "$t\W3CrashFix.noreport" '' -Encoding ascii
@@ -186,7 +159,7 @@ if ($code -eq 0) {
     $global:LASTEXITCODE = 0                                  # the crash was the point of this test
     $cl = if (Test-Path $clf) { Get-Content $clf -Raw } else { '' }
     $rp = if (Test-Path "$t\W3CrashFix-report.html") { Get-Content "$t\W3CrashFix-report.html" -Raw } else { '' }
-    foreach ($need in 'W3CrashFix crash report', 'Crash: exception 0xC0000005 (access violation, writing address 0x0) at witcher3.exe+0x', 'Registers: rax=', 'r15=', 'In-game mods: none', 'Verdict: ', '!!!! CRASH: exception 0xC0000005', 'not opened because OpenReportPage=0 in W3CrashFix.ini', 'mods: no in-game mods found', 'W3CrashFix.noreport was taken over into W3CrashFix.ini') {
+    foreach ($need in 'W3CrashFix crash report', 'Crash: exception 0xC0000005 (access violation, writing address 0x0) at witcher3.exe+0x', 'Registers: rax=', 'r15=', 'In-game mods: none', 'Verdict: ', 'Game: ', '!!!! CRASH: exception 0xC0000005', 'not opened because OpenReportPage=0 in W3CrashFix.ini', 'mods: no in-game mods found', 'W3CrashFix.noreport was taken over into W3CrashFix.ini') {
         if (-not $cl.Contains($need) -and -not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains($need)) { throw "test_diag: crash log lacks '$need'" }
     }
     if ((Test-Path "$t\W3CrashFix.noreport") -or (IniVal "$t\W3CrashFix.ini" 'OpenReportPage') -ne '0') { throw 'test_diag: W3CrashFix.noreport was not taken over into W3CrashFix.ini as OpenReportPage=0' }
@@ -195,8 +168,8 @@ if ($code -eq 0) {
     # and the visible GpuCrashDetails=0 default in W3CrashFix.ini.
     if ($cl -notmatch 'GPU state: [^\r\n]+') { throw 'test_diag: the crash summary has no "GPU state:" line' }
     if (-not (Get-Content "$t\W3CrashFix.activity.log" -Raw).Contains('[CRASH] GPU state: ')) { throw 'test_diag: the activity log lacks the GPU state line' }
-    if ((IniVal "$t\W3CrashFix.ini" 'GpuCrashDetails') -ne '1') { throw 'test_diag: W3CrashFix.ini does not show GpuCrashDetails=1 (on by default since 2.3.0)' }
-    if ((IniVal "$t\W3CrashFix.ini" 'DefaultsSet') -ne '2') { throw 'test_diag: W3CrashFix.ini does not show DefaultsSet=2' }
+    if ((IniVal "$t\W3CrashFix.ini" 'GpuCrashDetails') -ne '0') { throw 'test_diag: W3CrashFix.ini does not show GpuCrashDetails=0 (off by default again since 3.0.0)' }
+    if ((IniVal "$t\W3CrashFix.ini" 'DefaultsSet') -ne '3') { throw 'test_diag: W3CrashFix.ini does not show DefaultsSet=3' }
     # 1.6.2: the call stack. It starts at the crash address and names at least one caller in the stand-in game.
     $csLine = ($cl -split "`r?`n" | Where-Object { $_ -like 'Call stack: *' } | Select-Object -First 1)
     $crAt = [regex]::Match($cl, 'Crash: exception [^\r\n]* at (witcher3\.exe\+0x[0-9A-F]+)').Groups[1].Value
@@ -232,10 +205,10 @@ if ($code -eq 0) {
     Copy-Item "$keep\W3CrashFix.crash.log" $clf -Force
     Remove-Item $keep -Recurse -Force
     # Send page for the activity log (Onno, 19 Nov 2026): written at every start, never opened by the mod. The stand-in
-    # game is an unsupported build, so the "especially helpful" notice must be there too. Exactly one script.
+    # game has no "update the game" notice to show unless its file date is older than patch 5.02. Exactly one script.
     $sp = if (Test-Path "$t\W3CrashFix-send-log.html") { Get-Content "$t\W3CrashFix-send-log.html" -Raw } else { '' }
     if (-not $sp) { throw 'test_diag: W3CrashFix-send-log.html was not written' }
-    foreach ($need in 'Send the activity log', 'u.pcloud.com/#/puplink?code=', 'W3CrashFix.activity.log" onclick="cp(this)">Send the activity log</a>', 'also from a game that did not crash', 'Your log is especially helpful', 'W3CrashFix.activity.previous.log', "Copy the file's path") {
+    foreach ($need in 'Send the activity log', 'u.pcloud.com/#/puplink?code=', 'W3CrashFix.activity.log" onclick="cp(this)">Send the activity log</a>', 'also from a game that did not crash', 'W3CrashFix.activity.previous.log', "Copy the file's path") {
         if (-not $sp.Contains($need)) { throw "test_diag: the send page lacks '$need'" }
     }
     if (([regex]::Matches($sp, '<script')).Count -ne 1) { throw 'test_diag: the send page must have exactly one script' }
@@ -294,10 +267,10 @@ if ($code -eq 0) {
     $rpBytes = (Get-Item "$t\W3CrashFix-report.html").Length
     $want = '{0}.{1}' -f [math]::Floor([math]::Floor(($rpBytes * 10 + 512) / 1024) / 10), ([math]::Floor(($rpBytes * 10 + 512) / 1024) % 10)
     if (-not $rp.Contains("but the file itself ($want KB), and the installer's Uninstall removes it.")) { throw "test_diag: the footnote does not give the page's size ($rpBytes bytes = $want KB)" }
-    # The page shows only "Fix active" and the verdict (Onno, 17 Nov 2026); the full summary stays in the crash log.
-    foreach ($need in 'Fix active: ', 'Verdict: ') { if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" } }
-    foreach ($gone in 'Mod: W3CrashFix', 'Report id: ', 'In-game mods:', 'Game build supported:', 'Registers:', 'Session length:', 'Graphics card:', 'Descriptor heaps:', 'Memory: VRAM', 'summary above') {
-        if ($rp.Contains($gone)) { throw "test_diag: report page still shows '$gone' (only Fix active and the verdict belong there)" }
+    # The page shows only the verdict (Onno, 17 Nov 2026); the full summary stays in the crash log. Since 3.0.0 no "Fix active" line.
+    foreach ($need in 'Verdict: ') { if (-not $rp.Contains($need)) { throw "test_diag: report page lacks '$need'" } }
+    foreach ($gone in 'Mod: W3CrashFix', 'Report id: ', 'In-game mods:', 'Game build supported:', 'Fix active:', 'Game: ', 'Registers:', 'Session length:', 'Graphics card:', 'Descriptor heaps:', 'Memory: VRAM', 'summary above') {
+        if ($rp.Contains($gone)) { throw "test_diag: report page still shows '$gone' (only the verdict belongs there)" }
     }
     foreach ($gone in 'Report on GitHub', 'open Nexus Mods', 'issues/new', 'Open the folder', 'file:///') {
         if ($rp.Contains($gone)) { throw "test_diag: report page still contains '$gone'" }
@@ -363,12 +336,12 @@ if ($code -eq 0) {
         if ((Get-Content "$t\W3CrashFix.ini" -Raw).Contains('; The ReportId you entered')) { throw 'test_diag: the notice stayed after the user set a usable id' }
     }
     Remove-Item "$t\W3CrashFix.ini"
-    # License dialog (the variant in build\license): without an acceptance in W3CrashFix.ini the mod asks. The test program presses the buttons
+    # License dialog (since 3.0.0 the released mod itself; it is shown on every game version): without an acceptance in W3CrashFix.ini the mod asks. The test program presses the buttons
     # itself, so two dialogs flash by. OK must store the acceptance; OK + "I decline" must rename the mod's file and remove the settings.
     $lic = 'build\test\license'
     if (Test-Path $lic) { Remove-Item $lic -Recurse -Force }
     New-Item -ItemType Directory -Force $lic | Out-Null
-    Copy-Item "$t\witcher3.exe", build\license\W3CrashFix.asi $lic
+    Copy-Item "$t\witcher3.exe", build\W3CrashFix.asi $lic
     & "$lic\witcher3.exe" "$PWD\$lic\W3CrashFix.asi" accept | Out-Null
     if ($LASTEXITCODE) { throw "test_diag: the license dialog did not appear or Accept failed (exit $LASTEXITCODE)" }
     $ll = Get-Content "$lic\W3CrashFix.activity.log" -Raw
@@ -441,7 +414,7 @@ if ($WindowTest) {
     if (Test-Path $wt) { Remove-Item $wt -Recurse -Force }
     New-Item -ItemType Directory -Force $wt | Out-Null
     Copy-Item "$t\witcher3.exe", build\W3CrashFix.asi $wt
-    Set-Content "$wt\W3CrashFix.ini" "[W3CrashFix]`r`nOpenReportPage=1" -Encoding ascii
+    Set-Content "$wt\W3CrashFix.ini" "[W3CrashFix]`r`nLicenseAccepted=$licId`r`nOpenReportPage=1" -Encoding ascii   # accepted: no license dialog in this test
     $proc = Start-Process "$PWD\$wt\witcher3.exe" -ArgumentList "`"$PWD\$wt\W3CrashFix.asi`"", 'crashwin' -PassThru -WindowStyle Hidden
     $ended = $proc.WaitForExit(30000)
     if ($ended -and $proc.ExitCode -eq 9) { throw 'window test: the frozen stand-in window was not visible, so the test proves nothing' }
@@ -475,14 +448,11 @@ if ($WindowTest) {
 if (-not $CrashTest -and (Select-String -Path build\W3CrashFix.asi, build\dinput8.dll -Pattern 'crash keys are enabled' -Encoding ascii -Quiet)) {
     throw 'The built mod contains crash-test code, but -CrashTest was not given.'
 }
-# The mod that gets released has the license dialog, and is not the test variant of it.
-if (Select-String -Path build\W3CrashFix.asi, build\dinput8.dll -Pattern 'license dialog test variant' -Encoding ascii -Quiet) {
-    throw 'The built mod is the test variant of the license dialog; that must never be released.'
-}
+# The mod that gets released has the license dialog.
 foreach ($f in 'build\W3CrashFix.asi', 'build\dinput8.dll') {
     if (-not (Select-String -Path $f -Pattern 'license: asking the user' -Encoding ascii -Quiet)) { throw "The license dialog is missing from $f." }
 }
-if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7 to F12 crash the game). Do not release it.' }
+if ($CrashTest) { 'NOTE: this is a CRASH-TEST BUILD (Ctrl+Alt+Shift+F7, F8, F9 and F12 crash the game). Do not release it.' }
 
 if ($Package) {
     $ver = (Select-String src\w3crashfix.c -Pattern '#define W3CF_VERSION "(.+)"').Matches[0].Groups[1].Value

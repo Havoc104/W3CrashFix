@@ -1,99 +1,71 @@
 # W3CrashFix
 
-Fixes the frequent crashes of **The Witcher 3: Wild Hunt Remastered** (**DX12**) on PC.
+A crash reporter for **The Witcher 3: Wild Hunt Remastered** (**DX12**) on PC.
 
-### Game patch 5.02 (26 November 2026): the game now fixes this crash itself
+When the game crashes, W3CrashFix saves a report on your PC that says what crashed and, where it can tell, why: where the game crashed and how it got there, which files were involved and their versions, which mods and add-ons were loaded, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). The report's verdict tells you in plain words when another mod is the likely cause, and a graphics card that dropped out is recognised and explained, with tips. You can send the report in with one button. Nothing is ever sent by the mod itself.
 
-Patch 5.02 for The Witcher 3: Wild Hunt Remastered changes the very code that W3CrashFix repairs. We read the new code: the game now reuses an idle descriptor page instead of losing it, which is what this mod's fix does. CD PROJEKT RED's patch notes don't mention it. This comes from reading the game's code, and we have not confirmed it in a long play session.
+It changes no game files and no game code.
 
-What that means for you:
+### Since 3.0.0: no longer a fix, because the game has it
 
-- **On 5.02** you no longer need W3CrashFix for the descriptor heap crash. If you keep it installed, its fix switches itself off, because it never changes code it doesn't recognise, and it keeps working as a crash reporter. Its log says "FIX DISABLED" and "this build of the game is not supported yet". For 5.02 that message is out of date and you can ignore it.
-- **On 5.01c or older** (the mod calls that game version 5.0.16) nothing changes: the fix works as before.
-- **Crash reports are still welcome**, from 5.02 too. The two known issues below are other crashes, and the patch notes don't mention them.
+W3CrashFix started as a fix for one crash: the game's DX12 renderer leaked descriptor heaps until the graphics driver refused to create more, and the game crashed after playing for a while (access violation at `witcher3.exe+0x280ad3d` in game version 5.01c).
 
-It patches a bug in the game's code, in memory only, while the game runs. No game files are changed.
+**Game patch 5.02 (26 November 2026) fixes that leak in the game itself.** The patch changes the very code W3CrashFix used to repair: the game now reuses an idle descriptor page instead of losing it, which is what the mod's fix did. CD PROJEKT RED's patch notes don't mention it. We found it by reading the game's code, and a first long session confirms it: 76 minutes on 5.02 with path tracing on and without W3CrashFix's fix, and the number of live descriptor heaps stayed between 4 and 10 the whole time. Before 5.02 it climbed by about 4 per second towards 4,000.
 
-**Also a diagnostic tool for the game's other crashes.** Whatever crashes the game, W3CrashFix saves a crash report on your PC: where the game crashed and how it got there, which files were involved and their versions, which mods and add-ons were loaded, the state of the graphics card, and what happened just before (a loading screen, an alt-tab). If you send it in, it helps find the causes of those crashes too, and the ones found so far are recognised on the report page with tips. Nothing is ever sent by the mod itself.
+So the fix is obsolete, and from 3.0.0 on W3CrashFix no longer contains it. What is left is the part that grew around it: the crash reporter.
 
-**Steam and GOG versions.** The fix was made and tested on the Steam version. On the GOG version it switches itself on too, and players' sessions of over an hour on GOG ran with the fix active. On the Epic version it is not confirmed: an older version of the mod turned itself off there. Since 1.8.0 the mod also finds the game's code when it sits at a different place, so it may work now. Any other store version is untested.
+- **On game version 5.02 or newer:** this is the version for you.
+- **On an older game version:** please update the game. W3CrashFix 3.0.0 does not fix the descriptor heap crash, and its log, its crash report and the installer say so. If you can't update, [2.3.0](https://github.com/Havoc104/W3CrashFix/releases/tag/v2.3.0-5.0.16) is the last version with the fix.
+- **We only look at crash reports from game version 5.02 or newer, made by W3CrashFix 3.0.0 or newer.** Logs and crash dumps from older versions of the game or of W3CrashFix are no longer accepted: they are deleted without being analysed. If you're on an older version, please update first.
 
-### Epic players: we need you!
-
-One log from you can settle whether W3CrashFix works on the Epic version. Epic is the only store we haven't had a log from yet. There's reason to be hopeful: since 1.8.0 the mod also finds the game's code when it sits at other places, and a player's crash log has already shown the fix switching itself on in game version 5.0.15.65482.
-
-It takes two minutes, and your game doesn't need to crash:
-
-1. Install the latest version of W3CrashFix, start the game, load a save, then quit.
-2. Open `W3CrashFix-send-log.html` (next to the mod, in `bin\x64_dx12`) and click the send button.
-3. Type your Nexus name, or any name, as the upload name.
-
-The log shows whether the fix switched on. Nothing is sent unless you click the button.
-
-| Bug | Symptom |
-|---|---|
-| The DX12 renderer leaks shader-visible descriptor heaps. After about 4,000 heaps, `CreateDescriptorHeap` fails with `E_OUTOFMEMORY`. The game doesn't check for this and uses a NULL pointer. | Crash to desktop after playing for a while. Access violation at `witcher3.exe+0x280ad3d`. |
-
-**Video (3 minutes):** [how the crash works, and the fix](https://youtu.be/0h5bh2ZFebU).
-
-**Results on the author's PC (see "Tested with" below for the full setup):**
-- **Before:** over 30 crashes, all at `+0x280ad3d`.
-- **With the fix:** the live heap count stays flat at 7–9 heaps instead of climbing to about 4,000. Many hours of play, including the spots that used to crash every time, heavy fast travel and combat: no crashes.
+**Video (3 minutes):** [how the crash worked, and the fix](https://youtu.be/0h5bh2ZFebU).
 
 ### Known issue: "Gpu Crash for unknown reasons"
 
-We know about this crash and we're working to track it down. It is a different crash from the one W3CrashFix fixes: the game stops itself with "Gpu Crash for unknown reasons" (at `witcher3.exe+0x1F103A3`). Thanks to the crash logs you sent, we know it happens inside the game's DX12 renderer when the graphics card drops out, also on a game without any mods. Eight players have reported it so far, four of them on graphics cards with 6 GB of memory. The cause is not known, and W3CrashFix can't prevent this crash. W3CrashFix is highly unlikely to cause it: where a report had a call stack, W3CrashFix's own code wasn't in it, and in every report its fix had done little or nothing in that session (0 to 2 pages rescued in the whole session).
+The graphics card drops out, and the game stops itself with "Gpu Crash for unknown reasons". The crash logs players sent showed that it happens on games with and without mods, on eight players' PCs, four of them with a 6 GB graphics card. It is a matter of the graphics driver or the hardware. A mod can't prevent it, so we no longer look into it. W3CrashFix does not cause it: where a report had a call stack, W3CrashFix's own code wasn't in it. The crash report recognises this crash on every game version and tells you why Windows stopped the graphics card.
 
 Things that may help:
 - Update your graphics driver.
 - Remove any overclock or undervolt of your graphics card.
 - On a card with 8 GB of memory or less, lower texture quality and ray tracing.
+- Windows keeps its own record of such a drop-out: press Win+R, run `perfmon /rel` and look for a "Hardware error" at the time of the crash.
 
-If you get this crash, please send your crash log with the button on the report page. Every log helps.
+### What W3CrashFix can't do
 
-If the cause turns out to be the graphics driver or the graphics card itself, a mod can't fix it. Then the logs can still show what triggers it, so it can be avoided or reported to the right people.
-
-### Known issue: a crash while the game prepares a draw call
-
-Three players have reported a crash at `witcher3.exe+0x1EECD86` or `witcher3.exe+0x1EECF31`. It is a different crash from the one W3CrashFix fixes: the game's renderer uses a drawing list that is no longer valid. It also happens on a game without in-game mods and without a script extender. The cause is not known, and W3CrashFix can't prevent this crash. No report showed a sign that W3CrashFix caused it.
-
-The report page recognises this crash. If you get it, please set `CrashDump=1` in `W3CrashFix.ini` and send the crash log and the crash dump of the next crash: the dump shows what the log cannot. See [Settings](#settings).
-
-### What W3CrashFix can't fix
-
-W3CrashFix fixes one bug in the game's code: the descriptor heap leak. Your crash logs help to understand other crashes too, but many of those are out of reach for a mod like this:
+W3CrashFix reports crashes. It does not fix them. A report can tell you where to look:
 
 - **Graphics driver and hardware problems.** The graphics card dropping out because of the driver, an overclock or undervolt, heat or power. A mod can't repair a driver or a card.
-- **Crashes caused by other mods.** A conflict between mods, an outdated script extender, or a mod that doesn't fit this game version. The crash log can point to the mod involved, but the fix belongs in that mod, or in removing it.
+- **Crashes caused by other mods.** A conflict between mods, an outdated script extender, or a mod that doesn't fit this game version. The report says so when another mod is the likely cause, and names the file when it is in the call stack. The fix belongs in that mod, or in removing it; its author is the one to ask.
 - **Running out of memory.** When the graphics card or the PC simply has too little memory for the chosen settings and mods, lower settings help; a mod can't add memory.
 - **Freezes and hangs.** When the game stops responding without crashing, W3CrashFix sees no crash and writes no crash log.
-- **Other bugs in the game.** Each one would need its own careful patch, and many can't be patched safely from outside the game. Those are for CD PROJEKT RED to fix.
+- **Bugs in the game.** Those are for CD PROJEKT RED to fix.
 
 ## Requirements
 
-- The Witcher 3: Wild Hunt Remastered **5.0.16.41566** (tested; `witcher3.exe` in `bin\x64_dx12`), **Steam or GOG version**. Other game versions may work too: a player's crash log showed the fix active on **5.0.15.65482**. **Epic version: not confirmed yet. Please send a log** (see [Epic players: we need you!](#epic-players-we-need-you)).
+- The Witcher 3: Wild Hunt Remastered, **game version 5.02 or newer** (`witcher3.exe` in `bin\x64_dx12`). It runs on older versions too, but see above.
+- **DX12 mode only.** The DX11 executable (`bin\x64`) is not covered.
+- **Any store version.** Since 3.0.0 the mod no longer looks for particular game code, so it no longer depends on the store. It was made and tested on the Steam version.
 
-**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `2.3.0-5.0.16` is mod version 2.3.0, tested with game version 5.0.16. Older or newer game versions may work too, because the mod looks for the code it needs and switches the fix on only when it finds it (see below).
-- **DX12 mode only.** The DX11 executable (`bin\x64`) is not patched.
-
-**Safe on other versions and after game updates.** Before patching anything, the mod checks every function it uses, from the first byte to the last. If a game update only moves that code to other places, the mod finds it there and the fix keeps working without a new version: it switches on only when each function turns up exactly once with exactly the same code, and the functions call each other as they should. If the code itself is different (another store version, or an update that changed it), the fix turns itself off and logs `FIX DISABLED`. It never patches code it doesn't recognise. A player's crash log has shown this at work: on game version 5.0.15.65482 the mod found the code at other places and the fix switched itself on.
+**Version numbers** have the form `<mod version>-<game version>`. The game part is the game version the release was tested with: `3.0.0-5.0.17` is mod version 3.0.0, tested with game version 5.0.17 (5.02 Steam).
 
 ### Tested with
 
-- The Witcher 3: Wild Hunt Remastered, Steam version, 5.0.16.41566, DirectX 12.
+- The Witcher 3: Wild Hunt Remastered, Steam version, 5.0.17 (5.02 Steam), DirectX 12.
 - Ryzen 9 9950X3D, 64 GB RAM, RTX 5090 (32 GB), Windows 11, NVIDIA drivers 32.0.16.2114 and 32.0.16.2135.
 - 4K, borderless window, HDR, VSync on, 60 fps limit (applies to the base frame rate).
 - All graphics settings at maximum, path tracing on, NVIDIA HairWorks on.
 - DLSS 5 in Quality mode with Ray Reconstruction and dynamic frame generation, through the RenoDX DLSS add-on by ShortFuse (build 2026-10-16) with ReShade 6.8.0, in DLSS-NR mode, with `nvngx_dlssnr.dll` 310.8.SF. Installed with DLSS5oneclick.
-- Other mods: RT Shadow Fixes.
+- Other mods: Improved Horse Controls.
 
 Other ways of installing DLSS 5 (for example DLSS Manager) are untested.
 
 ### Other mods
 
-W3CrashFix changes no game files and no scripts, so it should work alongside other mods. That can't be promised for every mod: only what is listed under "Tested with" has actually been played with.
+W3CrashFix changes no game files, no scripts and no game code, so it should work alongside other mods. That can't be promised for every mod: only what is listed under "Tested with" has actually been played with.
 
-**A crash report names your mods.** In-game mods are the ones the game itself loads: the folders in the game's `Mods` folder, and add-ons in its `DLC` folder. The mod notes their folder names at the start of its log, and a crash report lists them, so that whoever reads the report can rule them in or out. Nothing is switched off because of a mod. Since 2.1.0 the log and the crash report also list the other DLL and ASI files loaded from the game folder that are not the game's own (an ASI loader, ReShade, RenoDX, DLSS add-ons, a script extender, other ASI plugins), with their versions.
+**A crash report names your mods.** In-game mods are the ones the game itself loads: the folders in the game's `Mods` folder, and add-ons in its `DLC` folder. The mod notes their folder names at the start of its log, and a crash report lists them. Nothing is switched off because of a mod. The log and the crash report also list the other DLL and ASI files loaded from the game folder that are not the game's own (an ASI loader, ReShade, RenoDX, DLSS add-ons, a script extender, other ASI plugins), with their versions.
+
+**When another mod is the likely cause, the report says so.** If a file that is not part of the game or Windows is in the call stack of the crash, the verdict names it and says the crash is most likely caused by that mod or add-on. If the game runs mods but none of them is in the call stack, the verdict says another mod is a likely cause and gives the numbers. In both cases the author of that mod is the one to ask. We don't investigate crashes of modded games.
 
 ## Installation
 
@@ -112,7 +84,7 @@ Use this if you don't want to install Ultimate ASI Loader. The folder can hold o
 
 1. Copy `bin\x64_dx12\dinput8.dll` from the zip into `<game folder>\bin\x64_dx12\`.
 
-If you accidentally install both versions, only the one that loads first patches the game. The other one does nothing.
+If you accidentally install both versions, only the one that loads first does the work. The other one does nothing.
 
 ### Optional: the installer/uninstaller
 
@@ -125,21 +97,19 @@ A small program that installs either version for you and can remove it again. Th
 
 **Uninstall** leaves a clean folder: besides the mod's own file it removes `W3CrashFix.ini` (the mod's settings: your license acceptance and the report id) and `W3CrashFix.removed` (left after declining), as well as the crash log with its folder, the report page and the activity logs. It leaves no traces of the mod behind.
 
-The installer checks your game version and won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that Ultimate ASI Loader is installed. If it isn't found, it links you to it. Ultimate ASI Loader is a separate project and isn't included. Without it the installer warns you and asks before it installs the ASI version, so you can still try another ASI loader at your own risk.
+The installer shows your game version, and says so when it is older than patch 5.02. It won't overwrite another mod's `dinput8.dll`. For the ASI version, it checks that Ultimate ASI Loader is installed. If it isn't found, it links you to it. Ultimate ASI Loader is a separate project and isn't included. Without it the installer warns you and asks before it installs the ASI version, so you can still try another ASI loader at your own risk.
 
 **Windows will show a warning** ("Windows protected your PC") when you start the installer. That's normal: the installer isn't code-signed, because a signing certificate costs money. It is safe to run. It only copies the W3CrashFix file into your game folder, and its full source code is in this repository (`src\installer.c`). Click **More info**, then **Run anyway**.
 
 **Scanned before every release.** Every release file is uploaded to [VirusTotal](https://www.virustotal.com), which checks it with about 70 virus scanners, and the results are in the release notes on GitHub. An installer that isn't code-signed is sometimes flagged by one or two lesser-known scanners; the full source code is here, so you can check what it does.
 
-ReShade (`dxgi.dll`), RenoDX and frame generation / DLSS mods were all in use during testing. See also [Other mods](#other-mods).
-
 ### Check that it works
 
-Start the game, accept the license if the window appears (see below), and load a save. Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
+Start the game and accept the license if the window appears (see below). Then open the mod's activity log, `<game folder>\bin\x64_dx12\W3CrashFix.activity.log`. It should contain:
 
 ```
-==== W3CrashFix 2.3.0-5.0.16 (...) loaded, pid ... ====
-fix: descriptor page recycling fix ACTIVE (w3+0x2809760 detoured)
+==== W3CrashFix 3.0.0-5.0.17 (...) loaded, pid ... ====
+game: exe timestamp ... (patch 5.02 or newer)
 hooks installed: yes (...)
 ```
 
@@ -147,36 +117,36 @@ Every 30 seconds the mod adds a status line to the log, including live descripto
 
 ### Settings
 
-The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini`, which you can open with Notepad. Since 2.1.0 the file itself explains every setting, in a short note above its line.
+The mod keeps its few settings in one small file next to itself, `W3CrashFix.ini`, which you can open with Notepad. The file itself explains every setting, in a short note above its line.
 
 ```ini
 [W3CrashFix]
 LicenseAccepted=MIT-2
 ReportId=0123456789ABCDEF
 OpenReportPage=1
-GpuCrashDetails=1
+GpuCrashDetails=0
 CrashDump=0
-DefaultsSet=2
+DefaultsSet=3
 ```
 
 - `LicenseAccepted`: the license text you accepted. See [The license window](#the-license-window).
 - `ReportId`: a random number, used only in crash reports. See [If the game crashes](#if-the-game-crashes).
 - `OpenReportPage`: set it to `0` if nothing should open after a crash. The crash log is still saved.
-- `GpuCrashDetails`: when the game crashes with "Gpu Crash for unknown reasons", the crash log also says which work your graphics card had not finished, and where on the card a bad memory access happened, if any. It is on by default; set it to `0` to switch it off. In a test on the author's PC it had no measurable effect on the frame rate; on other PCs it may cost a little. A change takes effect at the next game start. Every crash log says whether the graphics card was still working and, if not, why Windows stopped it, also with this setting off.
+- `GpuCrashDetails`: set it to `1` if you want more detail after a "Gpu Crash for unknown reasons": the crash log then also says which work your graphics card had not finished, and where on the card a bad memory access happened, if any. It is off by default and may cost a little frame rate on some PCs. A change takes effect at the next game start. Every crash log says whether the graphics card was still working and, if not, why Windows stopped it, also with this setting off.
 - `DefaultsSet`: written by the mod to remember which default settings your file has already been given. Leave it as it is.
-- `CrashDump`: set it to `1` to also save a crash dump, `W3CrashFix.crash.dmp`, next to the crash log. A dump shows what the game was working on when it crashed, much more than the log can; the leak this mod fixes was found in dumps. It can contain bits of the game's memory, such as file paths with your Windows user name, so it is off by default and you choose whether to send it. Expect a few MB up to a few tens of MB.
+- `CrashDump`: set it to `1` to also save a crash dump, `W3CrashFix.crash.dmp`, next to the crash log. A dump shows what the game was working on when it crashed, much more than the log can. It can contain bits of the game's memory, such as file paths with your Windows user name, so it is off by default and you choose whether to send it. Expect a few MB up to a few tens of MB.
 
 ### The license window
 
 The first time you start the game with W3CrashFix, a small window appears before the game does. It shows the MIT License, under which the mod is published, and says in plain words that the mod comes without any warranty.
 
-- **OK (Apply this mod)** accepts the license and switches the fix on. The window does not appear again unless the license itself changes; when it does, the window says so.
-- To decline, tick **I decline. Remove W3CrashFix from this game.** The button then reads **OK (Remove this mod)**. The fix stays off, and the mod renames its own file to `W3CrashFix.removed`, so that it never loads again.
+- **OK (Apply this mod)** accepts the license and switches the mod on. The window does not appear again unless the license itself changes; when it does, the window says so.
+- To decline, tick **I decline. Remove W3CrashFix from this game.** The button then reads **OK (Remove this mod)**. The mod stays off and renames its own file to `W3CrashFix.removed`, so that it never loads again.
 - **View source code** opens this repository in your browser.
 
 The game waits until you have chosen. The window has no close button on purpose. The Enter key works as OK once the window has been open for three seconds, so you can also answer it without a mouse.
 
-Until you accept, the mod does nothing at all: the fix is off, and there is no crash report and no logging of heap statistics.
+Until you accept, the mod does nothing at all: no crash report and no logging.
 
 **Why is a file left behind after declining?** Windows does not allow a program to delete a file that is in use, and the game has the mod loaded for as long as it runs. Renaming is allowed, so that is what the mod does. It does not start a helper program to delete the file afterwards, because that is the kind of behaviour antivirus software is suspicious of. You can delete `W3CrashFix.removed` yourself, or let the installer's **Uninstall** do it.
 
@@ -184,17 +154,15 @@ If a mod manager (Vortex, for example) installed the mod for you, remove it in t
 
 If you use the installer, the license is shown there when you click **Install**, and the game starts without the window.
 
-On a game version the mod does not support, the window does not appear: the fix is off there anyway.
-
 ### If the game crashes
 
-**A crash report from W3CrashFix doesn't mean W3CrashFix caused the crash.** The mod notices every crash of the game, also crashes it has nothing to do with, and saves a report about it. The report's verdict says which crash it was, and whether there is any sign that W3CrashFix was involved: it checks the crash address and the whole call stack for W3CrashFix's own code, and says whether its fix did anything in that session. When a mod, script extender, overlay or other add-on is in the call stack, the verdict names it, because it may be involved. In the crash reports sent so far, W3CrashFix's code was never part of the crash.
+**A crash report from W3CrashFix doesn't mean W3CrashFix caused the crash.** The mod notices every crash of the game and saves a report about it. The report's verdict says whether there is any sign that W3CrashFix was involved: it checks the crash address and the whole call stack for W3CrashFix's own code. When a mod, script extender, overlay or other add-on is in the call stack, the verdict names it and says that it is the most likely cause. In the crash reports sent so far, W3CrashFix's code was never part of the crash.
 
 The mod notices a crash and helps you report it:
 
 - It writes what crashed (file and offset) into its activity log.
-- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: the date and time of the crash, mod version, a random report id, the in-game mods that were enabled and the other DLL and ASI files that were loaded, whether the fix was active, the crash address with the call stack and the processor's registers, the graphics card with its driver and state, the game's graphics settings, heap counts, memory, and a verdict that says whether this is the crash W3CrashFix fixes. Only a newer crash overwrites that file. The report page shows the date and time of the crash too; opened again more than an hour later, it says it belongs to an older crash, so an old log isn't mistaken for a new one.
-- It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the summary and has one button, **Send the crash log** (**Send the crash files** when a crash dump was saved too).
+- It saves the crashed session as `W3CrashFix.crash.log`, in a folder of its own next to the mod: `W3CrashFix crash report`. The file starts with a short summary: the date and time of the crash, mod version, a random report id, the in-game mods that were enabled and the other DLL and ASI files that were loaded, whether the game is patch 5.02 or newer, the crash address with the call stack and the processor's registers, the graphics card with its driver and state, the game's graphics settings, heap counts, memory, and the verdict. Only a newer crash overwrites that file. The report page shows the date and time of the crash too; opened again more than an hour later, it says it belongs to an older crash, so an old log isn't mistaken for a new one.
+- It opens a small folder window on that folder, in the lower right corner of your screen, and then a report page, `W3CrashFix-report.html`, in your browser. The page shows the verdict and has one button, **Send the crash log** (**Send the crash files** when a crash dump was saved too).
 
 **Sending a report.** The button opens an upload page of the author's online storage (pCloud) and copies the crash log's path at the same time. On that page, click **Click Here to Add Files**, press Ctrl+V in the window that opens, and then Enter. Or drag the crash log from the small folder window onto the page; that window asks Windows to keep it on top. Then type any name you like (a made-up one is fine) and click Upload. You don't need an account. Sent the wrong file by mistake? No problem: anything that isn't a W3CrashFix log or crash dump is deleted. You can just send the right file afterwards.
 
@@ -204,11 +172,9 @@ The mod notices a crash and helps you report it:
 
 **The report id** is a random number made on your PC the first time the mod works. Its only use is that several reports from the same machine/installation can be recognised as such. It is not derived from your hardware, Windows or your name, and it says nothing about you. It is kept as `ReportId` in `W3CrashFix.ini`; remove that line to get a new one.
 
-**Crashes with another cause are welcome too.** The crash log is made for every crash, not only for the one W3CrashFix fixes. Such reports might be analysed in an attempt to provide a fix. That is not a promise.
+**Which reports we look at.** Reports from game version 5.02 or newer, made by W3CrashFix 3.0.0 or newer. Logs and crash dumps from older versions of the game or of W3CrashFix are no longer accepted: they are deleted without being analysed. A report from a game without other mods, or with only a few, tells the most: a crash that also happens on a clean game points at the game itself, and that is what we look for. A crash that only happens with mods points at one of them, and the report says so. Sending a report is not a promise that anything comes of it.
 
-**Your report is always welcome, also without a test.** It helps even more if you also check whether the crash happens on a clean game: move your other mods (in-game mods, ASI and DLL mods, ReShade) out of the game folder for a while, keep W3CrashFix, and play the same part again. If it still crashes, send that crash log too; the log shows by itself which mods were there. A crash on a clean game points at the game itself; a crash that only happens with mods points at one of them. Logs of both, with and without mods, from the same PC are especially helpful: the report id shows they belong together, and the two can be compared side by side.
-
-**No crash? Your log is welcome too.** A session without a crash, with or without other mods, shows how the game behaves when all goes well, and can be compared with sessions that crashed. To send it, open `W3CrashFix-send-log.html` in the game's `bin\x64_dx12` folder (the mod writes it at every game start). It has the same **Send** button as the report page, for `W3CrashFix.activity.log`. Send it after you close the game and before you start it again; at the next start the log becomes `W3CrashFix.activity.previous.log`, which you can send instead. Logs from the **Epic version** are especially helpful: it isn't confirmed that the fix switches on there, and the log shows it. Long sessions on the **GOG version** help too, since there is no long-term result from GOG yet.
+**No crash? Your log is welcome too.** A session without a crash shows how the game behaves when all goes well, and can be compared with sessions that crashed. To send it, open `W3CrashFix-send-log.html` in the game's `bin\x64_dx12` folder (the mod writes it at every game start). It has the same **Send** button as the report page, for `W3CrashFix.activity.log`. Send it after you close the game and before you start it again; at the next start the log becomes `W3CrashFix.activity.previous.log`, which you can send instead.
 
 The game's own crash reporter may also appear after a crash. That one reports to the game's developers; the W3CrashFix page is only about this mod. You can use both.
 
@@ -220,22 +186,44 @@ Use **Uninstall** in the installer, or delete `dinput8.dll` (standalone) or `W3C
 
 ## Technical details
 
-### The descriptor page leak
+### How the crash reporter works
 
-The DX12 renderer hands out shader-visible CBV/SRV/UAV descriptors from 1024-entry "pages". Each page is its own `ID3D12DescriptorHeap`. The allocator works like this:
+The mod is loaded into the game as `dinput8.dll` or as an ASI plugin. It registers a crash handler, and it hooks the D3D12 calls that create and release descriptor heaps, so that its log can show heap counts and which file created a heap. When the game crashes, the handler writes down the exception, the registers and the call stack, asks D3D12 whether the graphics device is still there (and why not, if it is gone), and saves the report. To name the places in a call stack it reads the game's own unwind data, as a debugger does. It changes no game code.
 
-- When the current page is full, the function at `+0x2809760` moves it to a *retired* list and takes a page from the *free* list. If the free list is empty, it creates a new heap.
-- Pages only move back from *retired* to *free* when a GPU-fence entry for them completes while they are no longer the current page.
+### History: the descriptor page leak (fixed by the game in patch 5.02)
 
-The bug is in the case where the GPU keeps up with the CPU. A page's last fence entry often completes while that page is still the current page. When it's retired later, it has `pending == 0` and `usesThisFrame == 0`. It never gets another fence entry, so it stays in the retired list forever.
+Up to game version 5.01c, the DX12 renderer handed out shader-visible CBV/SRV/UAV descriptors from 1024-entry "pages", each its own `ID3D12DescriptorHeap`, like this:
 
-About 1 in 5 retirements is lost this way. That's roughly 4 new heaps per second, until the driver refuses to create more. `+0x2809760` then stores a NULL page without checking, and the next allocation dereferences it at `+0x280ad3d`.
+- When the current page was full, the function at `+0x2809760` moved it to a *retired* list and took a page from the *free* list. If the free list was empty, it created a new heap.
+- Pages only moved back from *retired* to *free* when a GPU-fence entry for them completed while they were no longer the current page.
 
-**The fix** replaces `+0x2809760` with an identical version that has one change: a retired page that is already idle goes straight to the free list. "Idle" uses the game's own definition: no uses this frame, no pending GPU work. All other paths (in-flight pages, fence recycling, cached-table invalidation, heap creation) call the game's original code.
+The bug was in the case where the GPU keeps up with the CPU. A page's last fence entry often completed while that page was still the current page. When it was retired later, it had `pending == 0` and `usesThisFrame == 0`. It never got another fence entry, so it stayed in the retired list forever. About 1 in 5 retirements was lost this way, roughly 4 new heaps per second, until the driver refused to create more after about 4,000. `+0x2809760` then stored a NULL page without checking, and the next allocation dereferenced it at `+0x280ad3d`.
+
+**The fix in W3CrashFix 1.0.0 to 2.3.0** replaced `+0x2809760` with an identical version that had one change: a retired page that is already idle goes straight to the free list. On the author's PC that ended more than 30 crashes at the same address, and the live heap count stayed flat at 7 to 9 instead of climbing to about 4,000.
+
+**Patch 5.02** changed that function in the game: a page whose two counters are zero is now reused on the spot, and a failed heap creation returns an error instead of storing a NULL page.
 
 ## Changelog
 
 The name after a line says whose idea it was: Havoc's, Claude's, or something a player's log showed.
+
+### 3.0.0-5.0.17
+
+W3CrashFix is now a crash reporter. Game patch 5.02 fixes the descriptor heap leak in the game itself, so the fix this mod was made for is obsolete and has been taken out. So far forty-five crash reports from twenty-eight players have arrived; thank you to everyone who sent one.
+
+- **The fix is gone.** The mod no longer changes the game's code, and no longer looks for particular code in it. Everything around it stays: the crash report, the report page, the logs. - Havoc
+- **On a game older than patch 5.02** the activity log, the crash report, the send page and the installer say that the game should be updated first. 2.3.0 stays available as the last version with the fix. - Claude
+- **We only look at crash reports from game version 5.02 or newer, made by W3CrashFix 3.0.0 or newer.** Logs and crash dumps from older versions of the game or of W3CrashFix are no longer accepted: they are deleted without being analysed. - Havoc
+- Crash report: the verdict says in plain words when **another mod is the likely cause**. A mod or add-on in the call stack is named as the most likely cause; a modded game without one in the call stack gets "another mod or add-on is a likely cause", with the numbers. - Havoc
+- Crash report: the **"Gpu Crash for unknown reasons"** crash is recognised by what happened, no longer by an address, so it is explained on every game version. It is a matter of the graphics driver or the hardware, and we no longer look into it. A new tip points to Windows' own record of the drop-out (`perfmon /rel`). - Havoc
+- Setting **`GpuCrashDetails` is off by default again**, as before 2.3.0: the details were switched on to investigate the GPU crash, and that has stopped. A `1` that 2.3.0 set by itself is switched off once, at the next game start; set it back to `1` if you want the details. See [Settings](#settings). - Havoc and Claude
+- Crash report: the draw-call crash that 2.3.0 recognised (`witcher3.exe+0x1EECD86` and `+0x1EECF31`) is no longer recognised: those are addresses of the older game version. - Claude
+- Crash summary: one "Game:" line says whether the game is patch 5.02 or newer. The lines about the fix are gone. - Claude
+- The license window appears on every game version, and its text describes a crash reporter. - Claude
+- Version numbers: the game part is now 5.0.17, the game version this release was tested with (5.02 Steam). - Havoc
+- Installer: it shows the game version and warns on a game older than patch 5.02. - Claude
+
+**Do I need to update?** On game version 5.02 or newer: yes, if you want crash reports; 2.3.0's fix is switched off there anyway, and its log says the game is "not supported", which is out of date. On an older game version: update the game first, or stay on 2.3.0.
 
 ### 2.3.0-5.0.16
 
@@ -409,31 +397,33 @@ You need [Zig](https://ziglang.org/download/). Only its C compiler is used; no V
 - `src\w3crashfix.c`: the mod.
 - `src\w3cf_license.h`: the license text as shown to the user, shared by the mod and the installer.
 - `src\test_harness.c`: loads the DLL outside the game and exercises the D3D12 hooks.
-- `src\test_diag.c`: test for the unsupported-build diagnostic, the caller names in the log, the crash report, the settings file and the license window. `build.ps1` builds and runs it.
+- `src\test_diag.c`: test for the game version line, the caller names in the log, the crash report, the settings file and the license window. `build.ps1` builds and runs it.
 - `src\installer.c`, `src\installer.rc`, `src\installer.manifest`: the installer. Both mod files are embedded in it.
 - `src\installer-icon.svg`, `src\installer.ico`: the installer's icon, the cat from the project's banner.
 
 ## FAQ
 
-**Does it improve performance?** No. It only stops the crashes. In a frame-time comparison with and without the fix, the difference was within noise.
+**Does it fix crashes?** Not any more. Up to 2.3.0 it fixed one, the descriptor heap crash; game patch 5.02 fixes that one in the game. Since 3.0.0 W3CrashFix reports crashes and tells you what it can about the cause.
 
-**Does an fps cap help?** It delays the crash but doesn't stop it. The leak grows with every frame drawn, so fewer frames per second only means it takes longer to run out. W3CrashFix stops the leak itself, so you can play uncapped.
+**Does it change performance?** No. It only watches; with `GpuCrashDetails=1` it may cost a little frame rate on some PCs, which is why that is off by default.
+
+**I'm on an older game version. What now?** Update the game: patch 5.02 has the fix built in. If you can't, W3CrashFix 2.3.0 is the last version with the fix.
 
 **Can this get me banned?** The Witcher 3: Wild Hunt Remastered is single-player and has no anti-cheat. The mod uses the same loading method as many popular Witcher 3 mods.
 
-**Will CD Projekt RED fix this?** Hopefully. Once the game is updated with a fix, this mod disables itself automatically.
+**Did CD PROJEKT RED fix the crash this mod was made for?** Yes, in patch 5.02. Their patch notes don't mention it; we found it by reading the game's new code. See the top of this page.
 
 ## About the author
 
 > I'm Havoc, just a guy trying out vibe coding for the first time: I describe what I want, and an AI writes the code. W3CrashFix is a side project that I made with Claude, and it works far better than I ever expected.
 
-The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, 2.2.0 with Claude Fable 5.2, and 2.3.0 with Claude Opus 5.5 and Claude Fable 5.2. Everything was tested over many hours of play before publishing.
+The crash analysis and the code were made with Claude (by Anthropic): the original fix with the Claude Opus 5.5 model, the updates up to 1.6.0 with the newer Claude Fable 5.2 model, 1.6.1 to 2.1.0 with Claude Opus 5.5, 2.2.0 with Claude Fable 5.2, 2.3.0 with Claude Opus 5.5 and Claude Fable 5.2, and 3.0.0 with Claude Fable 5.2. Everything was tested over many hours of play before publishing.
 
 **Who did what.** The bug was only found because I let Claude analyse my crash dumps, and the technical explanations in this README were drafted by Claude. Since version 1.0.0, most changes were my ideas and every decision was mine; Claude worked out the details and wrote the code. For example, I wanted the mod to open the crash log after a crash and let players send it to me; showing that in a single browser page was Claude's idea, so a crashing game opens one window instead of several.
 
 ## Support
 
-W3CrashFix is free. If it saved your playthrough and you'd like to say thanks, you can buy me a coffee on Ko-fi:
+W3CrashFix is free. If it helped you and you'd like to say thanks, you can buy me a coffee on Ko-fi:
 
 [![Support on Ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/havoc104/tip)
 

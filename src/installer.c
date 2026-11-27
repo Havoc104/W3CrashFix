@@ -23,9 +23,11 @@
 #include <wchar.h>
 #include "w3cf_license.h"   // the license text and its id, shared with the mod
 
-#define W3CF_VERSION   L"2.3.0-5.0.16"
+#define W3CF_VERSION   L"3.0.0-5.0.17"
 #define GAME_NAME      L"The Witcher 3: Wild Hunt Remastered"
-#define GAME_VER       L"5.0.16.41566"
+// Game patch 5.02 has file version 5.0.17.x. Since 3.0.0 W3CrashFix holds no fix of its own (that patch has it), so
+// the installer only says so when the game is older.
+#define GAME_502_BUILD 17
 #define UAL_URL        L"https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest"
 #define KOFI_URL       L"https://ko-fi.com/havoc104/tip"
 #define STEAM_RUN_URL  L"steam://rungameid/292030"            // the game's Steam app id
@@ -167,17 +169,18 @@ static int find_asi_loader(const wchar_t *root, wchar_t *out) {
     return 0;
 }
 
-static int game_version(const wchar_t *root, wchar_t *out, size_t n) {   // 1 = exactly the supported version
+static int game_version(const wchar_t *root, wchar_t *out, size_t n) {   // 0 = older than patch 5.02; 1 = 5.02, newer, or not known
     wchar_t exe[MAX_PATH]; bin_file(root, L"witcher3.exe", exe);
     DWORD h, sz = GetFileVersionInfoSizeW(exe, &h);
     lstrcpynW(out, L"unknown", (int)n);
-    if (!sz) return 0;
+    if (!sz) return 1;
     void *buf = HeapAlloc(GetProcessHeap(), 0, sz);
-    VS_FIXEDFILEINFO *fi; UINT len; int ok = 0;
+    VS_FIXEDFILEINFO *fi; UINT len; int ok = 1;
     if (buf && GetFileVersionInfoW(exe, 0, sz, buf) && VerQueryValueW(buf, L"\\", (void **)&fi, &len)) {
         swprintf(out, n, L"%u.%u.%u.%u", HIWORD(fi->dwFileVersionMS), LOWORD(fi->dwFileVersionMS),
                  HIWORD(fi->dwFileVersionLS), LOWORD(fi->dwFileVersionLS));
-        ok = !wcscmp(out, GAME_VER);
+        ok = HIWORD(fi->dwFileVersionMS) > 5 || (HIWORD(fi->dwFileVersionMS) == 5 &&
+             (LOWORD(fi->dwFileVersionMS) > 0 || HIWORD(fi->dwFileVersionLS) >= GAME_502_BUILD));
     }
     if (buf) HeapFree(GetProcessHeap(), 0, buf);
     return ok;
@@ -331,9 +334,9 @@ static void refresh(void) {
         canUninstall = di == 1 || asi || left;
 
         wchar_t a[300], b[300], c[600];
-        if (vok) swprintf(a, 300, L"Game version: %ls (tested).", ver);
-        else swprintf(a, 300, L"Game version: %ls. This release was tested with %ls; other versions may work too "
-                              L"(the fix switches on only if it finds its code). The log shows whether it did.", ver, GAME_VER);
+        if (vok) swprintf(a, 300, L"Game version: %ls.", ver);
+        else swprintf(a, 300, L"Game version: %ls, older than patch 5.02. Please update the game: patch 5.02 fixes a crash "
+                              L"in the game itself, and W3CrashFix no longer contains a fix for it.", ver);
         if (di == 1) swprintf(b, 300, L"Installed now: W3CrashFix standalone (dinput8.dll).");
         else if (asi) swprintf(b, 300, L"Installed now: W3CrashFix ASI plugin (W3CrashFix.asi).");
         else if (left) swprintf(b, 300, L"Installed now: nothing. Files left over from an earlier removal can be cleaned up with Uninstall.");
@@ -439,12 +442,13 @@ static void action(int install) {
     if (game_running(root)) { msg(L"Please close the game first.", MB_ICONWARNING); return; }
     int asi = want_asi();
     if (install && !game_version(root, ver, 64)) {
-        wchar_t q[512];
-        // 23 Nov 2026 (Onno: "it should be noted that older/newer versions may work too"): since 1.8.0 the fix also
-        // switches on where it finds its code at other places (seen in a player's log on 5.0.15.65482).
-        swprintf(q, 512, L"Your game version is %ls. This release was tested with %ls.\n\n"
-                         L"Other versions may work too: the fix looks for the game code it needs and switches on only "
-                         L"when it finds it. Otherwise it stays off (harmless).\nInstall anyway?", ver, GAME_VER);
+        wchar_t q[640];
+        // Since 3.0.0 (Onno, 26 Nov 2026: "newer versions should leave the original fix out entirely as it's obsolete"):
+        // on a game older than patch 5.02 the installer says that this version does not fix the game's own crash.
+        swprintf(q, 640, L"Your game version is %ls, older than patch 5.02.\n\n"
+                         L"Patch 5.02 fixes the descriptor heap crash in the game itself. W3CrashFix " W3CF_VERSION L" is a crash "
+                         L"reporter and no longer contains a fix for that crash, so please update the game first. "
+                         L"For an older game, W3CrashFix 2.3.0 is the last version with the fix.\n\nInstall anyway?", ver);
         if (MessageBoxW(g_wnd, q, L"W3CrashFix " W3CF_VERSION, MB_YESNO | MB_ICONWARNING) != IDYES) return;
     }
     // The ASI plugin without Ultimate ASI Loader: allowed, because the user is free to try another loader, but only
@@ -479,8 +483,8 @@ static void action(int install) {
         swprintf(m, 512, L"%ls failed (error %lu): %ls", install ? L"Installation" : L"Uninstall", e, sys);
         msg(m, MB_ICONERROR);
     } else if (install) {
-        msg(L"W3CrashFix is installed.\n\nStart the game in DirectX 12 mode and load a save. "
-            L"bin\\x64_dx12\\W3CrashFix.activity.log should then contain a line with \"ACTIVE\".\n\n"
+        msg(L"W3CrashFix is installed.\n\nStart the game in DirectX 12 mode. "
+            L"bin\\x64_dx12\\W3CrashFix.activity.log should then start with a line that says \"loaded\".\n\n"
             L"W3CrashFix is free, but making and maintaining it costs time and money. Consider buying me a coffee "
             L"by clicking the button on the bottom left of the installer. For every cup of coffee I receive, "
             L"my cat gets a treat and some extra pets! \U0001F638", MB_ICONINFORMATION);
@@ -505,9 +509,9 @@ static void run_game(void) {
         if (MessageBoxW(g_wnd, L"Reminder: Ultimate ASI Loader was not found in this game folder.\n\n"
                                L"The ASI plugin only works through an ASI loader. W3CrashFix is made for and tested with "
                                L"Ultimate ASI Loader only; other ASI loaders are untested and not supported. If the plugin "
-                               L"is not loaded, the game runs without the fix.\n\n"
-                               L"After starting the game you can check bin\\x64_dx12\\W3CrashFix.activity.log: it should contain a "
-                               L"line with \"ACTIVE\".\n\nStart the game now?", L"W3CrashFix " W3CF_VERSION,
+                               L"is not loaded, a crash of the game leaves no report.\n\n"
+                               L"After starting the game you can check bin\\x64_dx12\\W3CrashFix.activity.log: it should start with a "
+                               L"line that says \"loaded\".\n\nStart the game now?", L"W3CrashFix " W3CF_VERSION,
                         MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) return;
     }
     HINSTANCE r;
@@ -545,7 +549,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
         HWND t = ctl(L"STATIC", L"W3CrashFix " W3CF_VERSION, 0, 16, 14, 528, 24, 0);
         SendMessageW(t, WM_SETFONT, (WPARAM)g_bold, TRUE);
         // 2.0.0 (Onno, 20 Nov 2026, "do it"): the subtitle names the diagnostics too, like the README and Nexus description
-        ctl(L"STATIC", L"Crash fix and diagnostics for " GAME_NAME L" (DirectX 12).", 0, 16, 40, 528, 20, 0);
+        ctl(L"STATIC", L"Crash reporter for " GAME_NAME L" (DirectX 12).", 0, 16, 40, 528, 20, 0);
         ctl(L"STATIC", L"Game folder:", 0, 16, 70, 528, 18, 0);
         g_path = ctl(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 16, 90, 432, 24, ID_PATH);
         ctl(L"BUTTON", L"Browse...", BS_PUSHBUTTON | WS_TABSTOP, 456, 89, 88, 26, ID_BROWSE);
